@@ -79,7 +79,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 1.4, 1.5, 6.3, 6.4_
 
-- [-] 6. Implement config flow and onboarding
+- [x] 6. Implement config flow and onboarding
   - [x] 6.1 Create basic config flow with entity selection
     - Write ConfigFlow class following HA patterns
     - Implement entity discovery and selection UI
@@ -87,7 +87,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 4.1, 4.2_
 
-  - [-] 6.2 Add Lovelace card installation option
+  - [x] 6.2 Add Lovelace card installation option
     - Implement dashboard and view discovery
     - Create card installation preview and confirmation
     - Add programmatic card addition using Lovelace storage API
@@ -95,8 +95,8 @@
     - git add and git commit to allow for rollback
     - _Requirements: 4.3, 4.4, 4.5_
 
-- [ ] 7. Implement Home Assistant service registration
-  - [ ] 7.1 Register scheduler services with HA
+- [-] 7. Implement Home Assistant service registration
+  - [-] 7.1 Register scheduler services with HA
     - Create scheduler.apply_slot service with parameter validation
     - Implement scheduler.apply_grid_now service for immediate application
     - Add proper service documentation and examples

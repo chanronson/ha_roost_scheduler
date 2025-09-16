@@ -401,13 +401,19 @@ class ScheduleManager:
                 _LOGGER.error("Entity %s is not tracked in schedules", entity_id)
                 return
             
-            # Parse time slot
+            # Parse and validate time slot format
             try:
                 start_time, end_time = time_slot.split('-')
                 start_time = start_time.strip()
                 end_time = end_time.strip()
-            except ValueError:
-                _LOGGER.error("Invalid time slot format: %s", time_slot)
+                
+                # Validate time format (HH:MM)
+                from datetime import time
+                time.fromisoformat(start_time)
+                time.fromisoformat(end_time)
+                
+            except ValueError as e:
+                _LOGGER.error("Invalid time slot format: %s (error: %s)", time_slot, e)
                 return
             
             # Get current mode and find the slot

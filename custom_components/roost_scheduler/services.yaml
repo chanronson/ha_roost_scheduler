@@ -1,0 +1,63 @@
+apply_slot:
+  name: Apply Schedule Slot
+  description: Apply a specific schedule slot to an entity immediately
+  fields:
+    entity_id:
+      name: Entity ID
+      description: The entity to apply the schedule slot to
+      required: true
+      selector:
+        entity:
+          domain: climate
+    day:
+      name: Day
+      description: Day of the week for the schedule slot
+      required: true
+      selector:
+        select:
+          options:
+            - "monday"
+            - "tuesday"
+            - "wednesday"
+            - "thursday"
+            - "friday"
+            - "saturday"
+            - "sunday"
+    time:
+      name: Time Slot
+      description: Time slot in format "HH:MM-HH:MM" (e.g., "08:00-09:30")
+      required: true
+      selector:
+        text:
+    force:
+      name: Force Apply
+      description: Force application bypassing buffer logic
+      required: false
+      default: false
+      selector:
+        boolean:
+    buffer_override:
+      name: Buffer Override
+      description: Override buffer settings for this application
+      required: false
+      selector:
+        object:
+
+apply_grid_now:
+  name: Apply Current Schedule
+  description: Apply the current schedule for an entity based on current time and presence
+  fields:
+    entity_id:
+      name: Entity ID
+      description: The entity to apply the current schedule to
+      required: true
+      selector:
+        entity:
+          domain: climate
+    force:
+      name: Force Apply
+      description: Force application bypassing buffer logic
+      required: false
+      default: false
+      selector:
+        boolean:
