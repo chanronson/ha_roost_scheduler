@@ -10,11 +10,22 @@ from typing import Any, Dict, Optional
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
+from homeassistant.exceptions import HomeAssistantError
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 from .models import ScheduleData
 
 _LOGGER = logging.getLogger(__name__)
+
+
+class StorageError(HomeAssistantError):
+    """Exception raised for storage-related errors."""
+    pass
+
+
+class CorruptedDataError(StorageError):
+    """Exception raised when storage data is corrupted."""
+    pass
 
 
 class StorageService:
@@ -25,42 +36,57 @@ class StorageService:
         self.hass = hass
         self.entry_id = entry_id
         self._store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}_{entry_id}")
-        self._schedule_data: Optional[Dict[str, Any]] = None
+        self._schedule_data: Optional[ScheduleData] = None
         self._backup_dir = Path(hass.config.config_dir) / "roost_scheduler_backups"
     
-    async def load_schedules(self) -> Optional[Dict[str, Any]]:
+    async def load_schedules(self) -> Optional[ScheduleData]:
         """Load schedule data from storage."""
         try:
             data = await self._store.async_load()
             if data:
-                self._schedule_data = data
-                _LOGGER.debug("Loaded schedule data for entry %s", self.entry_id)
-                return data
+                try:
+                    # Validate and parse the loaded data
+                    schedule_data = ScheduleData.from_dict(data)
+                    self._schedule_data = schedule_data
+                    _LOGGER.debug("Loaded and validated schedule data for entry %s", self.entry_id)
+                    return schedule_data
+                except (ValueError, TypeError) as e:
+                    _LOGGER.error("Corrupted schedule data detected: %s", e)
+                    raise CorruptedDataError(f"Invalid schedule data format: {e}")
             else:
                 _LOGGER.info("No existing schedule data found for entry %s", self.entry_id)
                 return None
-        except Exception as e:
-            _LOGGER.error("Error loading schedule data: %s", e)
-            # Attempt recovery from backup
+        except CorruptedDataError:
+            # Attempt recovery from backup for corrupted data
+            _LOGGER.warning("Attempting recovery from backup due to corrupted data")
             return await self._attempt_recovery()
+        except Exception as e:
+            _LOGGER.error("Unexpected error loading schedule data: %s", e)
+            raise StorageError(f"Failed to load schedule data: {e}")
     
-    async def save_schedules(self, schedules: Dict[str, Any]) -> None:
+    async def save_schedules(self, schedules: ScheduleData) -> None:
         """Save schedule data to storage."""
         try:
-            # Update metadata
-            if "metadata" not in schedules:
-                schedules["metadata"] = {}
+            # Validate the schedule data before saving
+            schedules.validate()
             
-            schedules["metadata"]["last_modified"] = datetime.now().isoformat()
+            # Update metadata
+            schedules.metadata["last_modified"] = datetime.now().isoformat()
+            
+            # Convert to dict for storage
+            data_dict = schedules.to_dict()
             
             # Save to storage
-            await self._store.async_save(schedules)
+            await self._store.async_save(data_dict)
             self._schedule_data = schedules
             
             _LOGGER.debug("Saved schedule data for entry %s", self.entry_id)
+        except (ValueError, TypeError) as e:
+            _LOGGER.error("Invalid schedule data: %s", e)
+            raise StorageError(f"Cannot save invalid schedule data: {e}")
         except Exception as e:
             _LOGGER.error("Error saving schedule data: %s", e)
-            raise
+            raise StorageError(f"Failed to save schedule data: {e}")
     
     async def export_backup(self, path: Optional[str] = None) -> str:
         """Export schedule data to a backup file."""
@@ -68,10 +94,13 @@ class StorageService:
             await self.load_schedules()
         
         if not self._schedule_data:
-            raise ValueError("No schedule data to export")
+            raise StorageError("No schedule data to export")
         
         # Ensure backup directory exists
-        self._backup_dir.mkdir(exist_ok=True)
+        try:
+            self._backup_dir.mkdir(exist_ok=True)
+        except OSError as e:
+            raise StorageError(f"Cannot create backup directory: {e}")
         
         # Generate filename if not provided
         if not path:
@@ -81,14 +110,20 @@ class StorageService:
         
         # Export data
         try:
+            # Use the ScheduleData's to_json method for consistent formatting
+            json_data = self._schedule_data.to_json()
+            
             with open(path, 'w', encoding='utf-8') as f:
-                json.dump(self._schedule_data, f, indent=2, ensure_ascii=False)
+                f.write(json_data)
             
             _LOGGER.info("Exported backup to %s", path)
             return path
+        except OSError as e:
+            _LOGGER.error("Error writing backup file: %s", e)
+            raise StorageError(f"Failed to write backup file: {e}")
         except Exception as e:
             _LOGGER.error("Error exporting backup: %s", e)
-            raise
+            raise StorageError(f"Failed to export backup: {e}")
     
     async def import_backup(self, file_path: str) -> bool:
         """Import schedule data from a backup file."""
@@ -97,16 +132,23 @@ class StorageService:
                 _LOGGER.error("Backup file not found: %s", file_path)
                 return False
             
-            with open(file_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            
-            # Validate data structure
-            if not self._validate_backup_data(data):
-                _LOGGER.error("Invalid backup data structure")
+            # Read and parse the backup file
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    json_data = f.read()
+                
+                # Use ScheduleData's from_json method for consistent parsing
+                schedule_data = ScheduleData.from_json(json_data)
+                
+            except (OSError, json.JSONDecodeError) as e:
+                _LOGGER.error("Error reading backup file %s: %s", file_path, e)
+                return False
+            except (ValueError, TypeError) as e:
+                _LOGGER.error("Invalid backup data format in %s: %s", file_path, e)
                 return False
             
             # Perform version migration if needed
-            migrated_data = await self._migrate_data(data)
+            migrated_data = await self._migrate_schedule_data(schedule_data)
             
             # Save imported data
             await self.save_schedules(migrated_data)
@@ -114,7 +156,7 @@ class StorageService:
             _LOGGER.info("Successfully imported backup from %s", file_path)
             return True
         except Exception as e:
-            _LOGGER.error("Error importing backup: %s", e)
+            _LOGGER.error("Unexpected error importing backup: %s", e)
             return False
     
     async def create_nightly_backup(self) -> Optional[str]:
@@ -147,43 +189,32 @@ class StorageService:
             _LOGGER.error("Error creating nightly backup: %s", e)
             return None
     
-    def _validate_backup_data(self, data: Dict[str, Any]) -> bool:
-        """Validate backup data structure."""
-        required_keys = ["version", "schedules"]
-        
-        for key in required_keys:
-            if key not in data:
-                _LOGGER.error("Missing required key in backup: %s", key)
-                return False
-        
-        # Validate schedules structure
-        schedules = data.get("schedules", {})
-        if not isinstance(schedules, dict):
-            return False
-        
-        return True
-    
-    async def _migrate_data(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Migrate data from older versions if needed."""
-        current_version = data.get("version", "0.1.0")
+    async def _migrate_schedule_data(self, schedule_data: ScheduleData) -> ScheduleData:
+        """Migrate schedule data from older versions if needed."""
+        current_version = schedule_data.version
         
         # Add migration logic here as versions evolve
         if current_version != "0.3.0":
             _LOGGER.info("Migrating data from version %s to 0.3.0", current_version)
-            data["version"] = "0.3.0"
+            schedule_data.version = "0.3.0"
             
             # Add any necessary migration steps here
+            # For example, if we need to migrate buffer config structure:
+            # if current_version == "0.2.0":
+            #     schedule_data = self._migrate_from_v02_to_v03(schedule_data)
         
-        return data
+        return schedule_data
     
-    async def _attempt_recovery(self) -> Optional[Dict[str, Any]]:
+    async def _attempt_recovery(self) -> Optional[ScheduleData]:
         """Attempt to recover from the most recent backup."""
         if not self._backup_dir.exists():
+            _LOGGER.warning("Backup directory does not exist, cannot attempt recovery")
             return None
         
         # Find most recent backup
         backup_files = list(self._backup_dir.glob(f"*{self.entry_id}*.json"))
         if not backup_files:
+            _LOGGER.warning("No backup files found for entry %s", self.entry_id)
             return None
         
         # Sort by modification time, newest first
@@ -193,6 +224,7 @@ class StorageService:
             try:
                 _LOGGER.info("Attempting recovery from %s", backup_file)
                 if await self.import_backup(str(backup_file)):
+                    _LOGGER.info("Successfully recovered from %s", backup_file)
                     return self._schedule_data
             except Exception as e:
                 _LOGGER.error("Recovery failed for %s: %s", backup_file, e)
