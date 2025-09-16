@@ -303,6 +303,190 @@ class TestStorageService:
             remaining_files = list(Path(temp_dir).glob("nightly_backup_test_entry_*.json"))
             assert len(remaining_files) == 7
 
+    @pytest.mark.asyncio
+    async def test_configure_nightly_backup(self, storage_service):
+        """Test configuring nightly backup settings."""
+        # Test enabling backup
+        storage_service.configure_nightly_backup(True, "03:30")
+        assert storage_service.is_nightly_backup_enabled() is True
+        assert storage_service.get_nightly_backup_time() == "03:30"
+        
+        # Test disabling backup
+        storage_service.configure_nightly_backup(False)
+        assert storage_service.is_nightly_backup_enabled() is False
+    
+    @pytest.mark.asyncio
+    async def test_get_backup_info(self, storage_service):
+        """Test getting backup information."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_service._backup_dir = Path(temp_dir)
+            
+            # Create some test backup files
+            backup1 = Path(temp_dir) / f"manual_backup_test_entry_20250916.json"
+            backup2 = Path(temp_dir) / f"nightly_backup_test_entry_20250917.json"
+            
+            backup1.write_text('{"test": "data1"}')
+            backup2.write_text('{"test": "data2"}')
+            
+            # Get backup info
+            info = await storage_service.get_backup_info()
+            
+            # Verify results
+            assert len(info["backups"]) == 2
+            assert info["total_size"] > 0
+            assert any(b["type"] == "manual" for b in info["backups"])
+            assert any(b["type"] == "nightly" for b in info["backups"])
+    
+    @pytest.mark.asyncio
+    async def test_get_backup_info_no_backups(self, storage_service):
+        """Test getting backup info when no backups exist."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_service._backup_dir = Path(temp_dir)
+            
+            info = await storage_service.get_backup_info()
+            
+            assert info["backups"] == []
+            assert info["total_size"] == 0
+    
+    @pytest.mark.asyncio
+    async def test_delete_backup_success(self, storage_service):
+        """Test successful backup deletion."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_service._backup_dir = Path(temp_dir)
+            
+            # Create a test backup file
+            filename = f"manual_backup_test_entry_20250916.json"
+            backup_file = Path(temp_dir) / filename
+            backup_file.write_text('{"test": "data"}')
+            
+            # Delete the backup
+            result = await storage_service.delete_backup(filename)
+            
+            # Verify deletion
+            assert result is True
+            assert not backup_file.exists()
+    
+    @pytest.mark.asyncio
+    async def test_delete_backup_not_found(self, storage_service):
+        """Test deleting non-existent backup."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_service._backup_dir = Path(temp_dir)
+            
+            result = await storage_service.delete_backup("nonexistent_file.json")
+            assert result is False
+    
+    @pytest.mark.asyncio
+    async def test_delete_backup_security_check(self, storage_service):
+        """Test security checks in backup deletion."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_service._backup_dir = Path(temp_dir)
+            
+            # Test invalid filename (no entry_id)
+            result = await storage_service.delete_backup("invalid_backup.json")
+            assert result is False
+            
+            # Test invalid extension
+            result = await storage_service.delete_backup(f"backup_test_entry_20250916.txt")
+            assert result is False
+    
+    @pytest.mark.asyncio
+    async def test_migration_functionality(self, storage_service, sample_schedule_data):
+        """Test data migration during import."""
+        # Create old version data
+        old_data = sample_schedule_data
+        old_data.version = "0.2.0"
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as temp_file:
+            temp_file.write(old_data.to_json())
+            temp_file.flush()
+            
+            # Mock save_schedules to capture migrated data
+            migrated_data = None
+            async def mock_save(data):
+                nonlocal migrated_data
+                migrated_data = data
+            
+            with patch.object(storage_service, 'save_schedules', side_effect=mock_save):
+                result = await storage_service.import_backup(temp_file.name)
+                
+                # Verify migration occurred
+                assert result is True
+                assert migrated_data is not None
+                assert migrated_data.version == "0.3.0"
+            
+            os.unlink(temp_file.name)
+    
+    @pytest.mark.asyncio
+    async def test_backup_restore_roundtrip(self, storage_service, sample_schedule_data):
+        """Test complete backup and restore cycle."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_service._backup_dir = Path(temp_dir)
+            storage_service._schedule_data = sample_schedule_data
+            
+            # Export backup
+            backup_path = await storage_service.export_backup()
+            assert os.path.exists(backup_path)
+            
+            # Clear current data
+            storage_service._schedule_data = None
+            
+            # Import backup
+            with patch.object(storage_service, 'save_schedules') as mock_save:
+                result = await storage_service.import_backup(backup_path)
+                assert result is True
+                
+                # Verify imported data matches original
+                imported_data = mock_save.call_args[0][0]
+                assert imported_data.version == sample_schedule_data.version
+                assert imported_data.entities_tracked == sample_schedule_data.entities_tracked
+                assert len(imported_data.schedules) == len(sample_schedule_data.schedules)
+
+
+class TestStorageIntegration:
+    """Integration tests for storage service."""
+    
+    @pytest.mark.asyncio
+    async def test_storage_error_handling(self):
+        """Test storage service error handling."""
+        # Test with invalid hass object
+        mock_hass = MagicMock()
+        mock_hass.config = MagicMock()
+        mock_hass.config.config_dir = "/invalid/path"
+        
+        service = StorageService(mock_hass, "test_entry")
+        
+        # Test export with invalid directory should handle gracefully
+        with patch.object(service, '_schedule_data', None):
+            with patch.object(service, 'load_schedules', return_value=None):
+                with pytest.raises(StorageError):
+                    await service.export_backup()
+    
+    @pytest.mark.asyncio
+    async def test_concurrent_backup_operations(self, storage_service, sample_schedule_data):
+        """Test concurrent backup operations."""
+        import asyncio
+        
+        with tempfile.TemporaryDirectory() as temp_dir:
+            storage_service._backup_dir = Path(temp_dir)
+            storage_service._schedule_data = sample_schedule_data
+            
+            # Run multiple backup operations concurrently
+            tasks = [
+                storage_service.export_backup(),
+                storage_service.export_backup(),
+                storage_service.create_nightly_backup()
+            ]
+            
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # At least some should succeed
+            successful_backups = [r for r in results if isinstance(r, str)]
+            assert len(successful_backups) >= 1
+            
+            # Verify files were created
+            backup_files = list(Path(temp_dir).glob("*.json"))
+            assert len(backup_files) >= 1
+
 
 if __name__ == "__main__":
     pytest.main([__file__])

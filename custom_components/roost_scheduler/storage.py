@@ -38,6 +38,8 @@ class StorageService:
         self._store = Store(hass, STORAGE_VERSION, f"{STORAGE_KEY}_{entry_id}")
         self._schedule_data: Optional[ScheduleData] = None
         self._backup_dir = Path(hass.config.config_dir) / "roost_scheduler_backups"
+        self._nightly_backup_enabled = True
+        self._nightly_backup_time = "02:00"  # Default backup time
     
     async def load_schedules(self) -> Optional[ScheduleData]:
         """Load schedule data from storage."""
@@ -232,6 +234,117 @@ class StorageService:
         
         _LOGGER.error("All recovery attempts failed")
         return None
+    
+    def configure_nightly_backup(self, enabled: bool, backup_time: str = "02:00") -> None:
+        """Configure automatic nightly backup settings."""
+        self._nightly_backup_enabled = enabled
+        self._nightly_backup_time = backup_time
+        _LOGGER.info("Nightly backup configured: enabled=%s, time=%s", enabled, backup_time)
+    
+    def is_nightly_backup_enabled(self) -> bool:
+        """Check if nightly backup is enabled."""
+        return self._nightly_backup_enabled
+    
+    def get_nightly_backup_time(self) -> str:
+        """Get the configured nightly backup time."""
+        return self._nightly_backup_time
+    
+    async def schedule_nightly_backup(self) -> None:
+        """Schedule the nightly backup using Home Assistant's time tracking."""
+        if not self._nightly_backup_enabled:
+            return
+        
+        try:
+            from homeassistant.helpers.event import async_track_time_change
+            
+            # Parse backup time
+            hour, minute = map(int, self._nightly_backup_time.split(':'))
+            
+            # Schedule the backup
+            async_track_time_change(
+                self.hass,
+                self._scheduled_backup_callback,
+                hour=hour,
+                minute=minute,
+                second=0
+            )
+            
+            _LOGGER.info("Scheduled nightly backup at %s", self._nightly_backup_time)
+        except Exception as e:
+            _LOGGER.error("Error scheduling nightly backup: %s", e)
+    
+    async def _scheduled_backup_callback(self, now) -> None:
+        """Callback for scheduled nightly backup."""
+        try:
+            backup_path = await self.create_nightly_backup()
+            if backup_path:
+                _LOGGER.info("Scheduled backup completed: %s", backup_path)
+            else:
+                _LOGGER.debug("Scheduled backup skipped (no data)")
+        except Exception as e:
+            _LOGGER.error("Error during scheduled backup: %s", e)
+    
+    async def get_backup_info(self) -> Dict[str, Any]:
+        """Get information about available backups."""
+        if not self._backup_dir.exists():
+            return {"backups": [], "total_size": 0}
+        
+        backups = []
+        total_size = 0
+        
+        try:
+            backup_files = list(self._backup_dir.glob(f"*{self.entry_id}*.json"))
+            
+            for backup_file in backup_files:
+                try:
+                    stat = backup_file.stat()
+                    backups.append({
+                        "filename": backup_file.name,
+                        "path": str(backup_file),
+                        "size": stat.st_size,
+                        "created": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                        "type": "nightly" if "nightly_backup" in backup_file.name else "manual"
+                    })
+                    total_size += stat.st_size
+                except Exception as e:
+                    _LOGGER.warning("Error reading backup file %s: %s", backup_file, e)
+            
+            # Sort by creation time, newest first
+            backups.sort(key=lambda x: x["created"], reverse=True)
+            
+            return {
+                "backups": backups,
+                "total_size": total_size,
+                "backup_dir": str(self._backup_dir)
+            }
+        except Exception as e:
+            _LOGGER.error("Error getting backup info: %s", e)
+            return {"backups": [], "total_size": 0, "error": str(e)}
+    
+    async def delete_backup(self, filename: str) -> bool:
+        """Delete a specific backup file."""
+        try:
+            backup_path = self._backup_dir / filename
+            
+            # Security check - ensure file is in backup directory and has correct pattern
+            if not backup_path.exists():
+                _LOGGER.error("Backup file not found: %s", filename)
+                return False
+            
+            if not backup_path.is_relative_to(self._backup_dir):
+                _LOGGER.error("Security violation: backup file outside backup directory")
+                return False
+            
+            if self.entry_id not in filename or not filename.endswith('.json'):
+                _LOGGER.error("Invalid backup filename format: %s", filename)
+                return False
+            
+            backup_path.unlink()
+            _LOGGER.info("Deleted backup file: %s", filename)
+            return True
+        except Exception as e:
+            _LOGGER.error("Error deleting backup %s: %s", filename, e)
+            return False
     
     async def _cleanup_old_backups(self) -> None:
         """Clean up old nightly backups, keeping only the last 7 days."""
