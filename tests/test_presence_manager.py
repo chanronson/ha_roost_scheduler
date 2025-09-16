@@ -364,3 +364,170 @@ class TestPresenceConfiguration:
         
         # Should have set up new listeners
         assert mock_track.call_count >= 1
+
+
+class TestCustomTemplateSupport:
+    """Test custom Jinja template functionality."""
+    
+    @patch('custom_components.roost_scheduler.presence_manager.Template')
+    async def test_configure_presence_with_template(self, mock_template_class, presence_manager):
+        """Test configuring presence with custom template."""
+        template_str = "{{ is_state('device_tracker.phone', 'home') or is_state('person.user', 'home') }}"
+        
+        # Mock Template class
+        mock_template = Mock()
+        mock_template_class.return_value = mock_template
+        
+        await presence_manager.configure_presence(
+            ["device_tracker.phone"], "custom", 600, template_str
+        )
+        
+        assert presence_manager._custom_template == mock_template
+        assert presence_manager._presence_rule == "custom"
+        mock_template_class.assert_called_once_with(template_str, presence_manager.hass)
+    
+    def test_extract_template_entities(self, presence_manager):
+        """Test extracting entity IDs from template strings."""
+        template_str = """
+        {{ is_state('device_tracker.phone', 'home') and 
+           states('person.user') == 'home' and
+           state_attr('sensor.presence', 'value') > 0 }}
+        """
+        
+        entities = presence_manager._extract_template_entities(template_str)
+        
+        expected_entities = ['device_tracker.phone', 'person.user', 'sensor.presence']
+        assert set(entities) == set(expected_entities)
+    
+    def test_set_custom_template(self, presence_manager):
+        """Test setting custom template."""
+        template_str = "{{ is_state('device_tracker.phone', 'home') }}"
+        
+        with patch('custom_components.roost_scheduler.presence_manager.Template') as mock_template_class:
+            mock_template = Mock()
+            mock_template_class.return_value = mock_template
+            
+            result = presence_manager.set_custom_template(template_str)
+            
+            assert result is True
+            assert presence_manager._custom_template == mock_template
+            assert presence_manager._presence_rule == "custom"
+            assert 'device_tracker.phone' in presence_manager._template_entities
+    
+    def test_set_custom_template_error(self, presence_manager):
+        """Test setting invalid custom template."""
+        template_str = "{{ invalid_template_syntax"
+        
+        with patch('custom_components.roost_scheduler.presence_manager.Template') as mock_template_class:
+            mock_template_class.side_effect = Exception("Template error")
+            
+            result = presence_manager.set_custom_template(template_str)
+            
+            assert result is False
+            assert presence_manager._custom_template is None
+    
+    def test_clear_custom_template(self, presence_manager):
+        """Test clearing custom template."""
+        # Set up template first
+        presence_manager._custom_template = Mock()
+        presence_manager._template_entities = ['device_tracker.phone']
+        presence_manager._presence_rule = "custom"
+        
+        presence_manager.clear_custom_template()
+        
+        assert presence_manager._custom_template is None
+        assert presence_manager._template_entities == []
+        assert presence_manager._presence_rule == "anyone_home"
+    
+    async def test_evaluate_custom_template_boolean(self, presence_manager):
+        """Test custom template evaluation with boolean result."""
+        mock_template = Mock()
+        mock_template.async_render.return_value = True
+        presence_manager._custom_template = mock_template
+        
+        result = await presence_manager._evaluate_custom_template()
+        
+        assert result is True
+        mock_template.async_render.assert_called_once()
+    
+    async def test_evaluate_custom_template_string(self, presence_manager):
+        """Test custom template evaluation with string result."""
+        mock_template = Mock()
+        mock_template.async_render.return_value = "home"
+        presence_manager._custom_template = mock_template
+        
+        result = await presence_manager._evaluate_custom_template()
+        
+        assert result is True
+        
+        # Test false string values
+        for false_value in ['false', 'no', 'off', '0', 'away']:
+            mock_template.async_render.return_value = false_value
+            result = await presence_manager._evaluate_custom_template()
+            assert result is False
+    
+    async def test_evaluate_custom_template_error(self, presence_manager, hass):
+        """Test custom template evaluation with error fallback."""
+        mock_template = Mock()
+        mock_template.async_render.side_effect = Exception("Template error")
+        presence_manager._custom_template = mock_template
+        presence_manager._presence_entities = ["device_tracker.phone"]
+        
+        # Mock entity state for fallback
+        phone_state = Mock(spec=State)
+        phone_state.domain = "device_tracker"
+        phone_state.state = STATE_HOME
+        phone_state.last_updated = datetime.now()
+        
+        hass.states.get.return_value = phone_state
+        
+        result = await presence_manager._evaluate_custom_template()
+        
+        # Should fall back to standard evaluation
+        assert result is True
+    
+    async def test_evaluate_presence_with_template(self, presence_manager):
+        """Test presence evaluation using custom template."""
+        mock_template = Mock()
+        mock_template.async_render.return_value = True
+        presence_manager._custom_template = mock_template
+        
+        result = await presence_manager.evaluate_presence_entities()
+        
+        assert result is True
+        mock_template.async_render.assert_called_once()
+    
+    @patch('custom_components.roost_scheduler.presence_manager.async_track_state_change_event')
+    async def test_template_entities_in_listeners(self, mock_track, presence_manager):
+        """Test that template entities are included in state listeners."""
+        template_str = "{{ is_state('device_tracker.phone', 'home') }}"
+        
+        with patch('custom_components.roost_scheduler.presence_manager.Template'):
+            await presence_manager.configure_presence(
+                ["person.user"], "custom", 600, template_str
+            )
+            
+            await presence_manager.async_initialize()
+            
+            # Should include both presence entities and template entities
+            call_args = mock_track.call_args[0]
+            entities = call_args[1]  # Second argument is the entity list
+            
+            assert 'person.user' in entities
+            assert 'device_tracker.phone' in entities
+    
+    def test_get_presence_status_with_template(self, presence_manager):
+        """Test presence status includes template information."""
+        template_str = "{{ is_state('device_tracker.phone', 'home') }}"
+        mock_template = Mock()
+        mock_template.template = template_str
+        
+        presence_manager._custom_template = mock_template
+        presence_manager._template_entities = ['device_tracker.phone']
+        presence_manager._presence_rule = "custom"
+        
+        status = presence_manager.get_presence_status()
+        
+        assert status["custom_template"] == template_str
+        assert status["template_entities"] == ['device_tracker.phone']
+        assert status["presence_rule"] == "custom"

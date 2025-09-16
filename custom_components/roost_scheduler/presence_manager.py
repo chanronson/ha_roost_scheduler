@@ -8,6 +8,7 @@ from typing import Callable, List, Optional
 from homeassistant.core import HomeAssistant, State, Event
 from homeassistant.const import STATE_HOME, STATE_NOT_HOME, EVENT_STATE_CHANGED
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.template import Template
 
 from .const import MODE_HOME, MODE_AWAY, DEFAULT_PRESENCE_TIMEOUT_SECONDS
 
@@ -31,6 +32,8 @@ class PresenceManager:
         }
         self._state_listeners = []
         self._initialized = False
+        self._custom_template: Optional[Template] = None
+        self._template_entities: List[str] = []
     
     async def get_current_mode(self) -> str:
         """Get the current presence mode (home or away)."""
@@ -66,7 +69,11 @@ class PresenceManager:
         return mode
     
     async def evaluate_presence_entities(self) -> bool:
-        """Evaluate presence entities based on the configured rule."""
+        """Evaluate presence entities based on the configured rule or custom template."""
+        # If custom template is configured, use it instead of standard rules
+        if self._custom_template:
+            return await self._evaluate_custom_template()
+        
         if not self._presence_entities:
             _LOGGER.debug("No presence entities configured, defaulting to home")
             return True
@@ -101,6 +108,10 @@ class PresenceManager:
             result = home_count > 0
         elif self._presence_rule == "everyone_home":
             result = home_count == total_valid
+        elif self._presence_rule == "custom":
+            # Custom rule without template - should not happen
+            _LOGGER.error("Custom rule specified but no template configured")
+            result = home_count > 0
         else:
             _LOGGER.error("Unknown presence rule: %s", self._presence_rule)
             result = home_count > 0
@@ -160,8 +171,15 @@ class PresenceManager:
         # Listen to all presence entities
         all_entities = list(self._presence_entities)
         
+        # Add template entities if using custom template
+        if self._template_entities:
+            all_entities.extend(self._template_entities)
+        
         # Add override entities
         all_entities.extend(self._override_entities.values())
+        
+        # Remove duplicates
+        all_entities = list(set(all_entities))
         
         if all_entities:
             # Track state changes for all relevant entities
@@ -200,7 +218,8 @@ class PresenceManager:
         self._initialized = False
         _LOGGER.debug("PresenceManager unloaded")
     
-    async def configure_presence(self, entities: List[str], rule: str, timeout_seconds: int) -> None:
+    async def configure_presence(self, entities: List[str], rule: str, timeout_seconds: int, 
+                                custom_template: Optional[str] = None) -> None:
         """Configure presence detection settings."""
         # Clean up existing listeners
         for listener in self._state_listeners:
@@ -212,12 +231,28 @@ class PresenceManager:
         self._presence_rule = rule
         self._timeout_seconds = timeout_seconds
         
+        # Configure custom template if provided
+        if custom_template:
+            try:
+                self._custom_template = Template(custom_template, self.hass)
+                # Extract entities referenced in the template
+                self._template_entities = self._extract_template_entities(custom_template)
+                _LOGGER.info("Configured custom presence template with entities: %s", 
+                           self._template_entities)
+            except Exception as e:
+                _LOGGER.error("Failed to configure custom template: %s", e)
+                self._custom_template = None
+                self._template_entities = []
+        else:
+            self._custom_template = None
+            self._template_entities = []
+        
         # Set up new listeners if initialized
         if self._initialized:
             await self._setup_state_listeners()
         
-        _LOGGER.info("Configured presence: entities=%s, rule=%s, timeout=%ds", 
-                    entities, rule, timeout_seconds)
+        _LOGGER.info("Configured presence: entities=%s, rule=%s, timeout=%ds, template=%s", 
+                    entities, rule, timeout_seconds, bool(custom_template))
     
     def _is_entity_home(self, state: State) -> bool:
         """Determine if an entity state indicates 'home'."""
@@ -265,6 +300,8 @@ class PresenceManager:
             "current_mode": self._current_mode,
             "presence_rule": self._presence_rule,
             "timeout_seconds": self._timeout_seconds,
+            "custom_template": self._custom_template.template if self._custom_template else None,
+            "template_entities": self._template_entities,
             "entities": {},
             "overrides": {}
         }
@@ -297,3 +334,108 @@ class PresenceManager:
             }
         
         return status
+    
+    async def _evaluate_custom_template(self) -> bool:
+        """Evaluate custom Jinja template for presence detection."""
+        if not self._custom_template:
+            _LOGGER.error("Custom template evaluation called but no template configured")
+            return True
+        
+        try:
+            # Render the template
+            result = self._custom_template.async_render()
+            
+            # Convert result to boolean
+            if isinstance(result, str):
+                # Handle string results
+                result_lower = result.lower().strip()
+                is_home = result_lower in ['true', 'yes', 'on', '1', 'home']
+            elif isinstance(result, bool):
+                is_home = result
+            elif isinstance(result, (int, float)):
+                is_home = bool(result)
+            else:
+                _LOGGER.warning("Template returned unexpected type %s: %s", type(result), result)
+                is_home = bool(result)
+            
+            _LOGGER.debug("Custom template evaluation result: %s -> %s", result, is_home)
+            return is_home
+            
+        except Exception as e:
+            _LOGGER.error("Error evaluating custom presence template: %s", e)
+            # Fall back to standard evaluation
+            return await self._evaluate_standard_presence()
+    
+    async def _evaluate_standard_presence(self) -> bool:
+        """Evaluate presence using standard rules (fallback for template errors)."""
+        if not self._presence_entities:
+            return True
+        
+        home_count = 0
+        total_valid = 0
+        
+        for entity_id in self._presence_entities:
+            state = self.hass.states.get(entity_id)
+            if not state or self.is_entity_stale(entity_id):
+                total_valid += 1
+                continue
+            
+            total_valid += 1
+            if self._is_entity_home(state):
+                home_count += 1
+        
+        if total_valid == 0:
+            return False
+        
+        return home_count > 0  # Default to anyone_home rule
+    
+    def _extract_template_entities(self, template_str: str) -> List[str]:
+        """Extract entity IDs referenced in a Jinja template."""
+        import re
+        
+        # Pattern to match states('entity.id') or is_state('entity.id', 'value')
+        patterns = [
+            r"states\(['\"]([^'\"]+)['\"]\)",
+            r"is_state\(['\"]([^'\"]+)['\"]",
+            r"state_attr\(['\"]([^'\"]+)['\"]",
+            r"states\.([a-zA-Z_][a-zA-Z0-9_]*\.[a-zA-Z_][a-zA-Z0-9_]*)",
+        ]
+        
+        entities = set()
+        for pattern in patterns:
+            matches = re.findall(pattern, template_str)
+            entities.update(matches)
+        
+        # Convert domain.entity format to entity_id format
+        entity_list = []
+        for entity in entities:
+            if '.' in entity:
+                entity_list.append(entity)
+            else:
+                # Handle states.domain.entity format
+                _LOGGER.debug("Skipping malformed entity reference: %s", entity)
+        
+        return list(entity_list)
+    
+    def set_custom_template(self, template_str: str) -> bool:
+        """Set a custom Jinja template for presence evaluation."""
+        try:
+            self._custom_template = Template(template_str, self.hass)
+            self._template_entities = self._extract_template_entities(template_str)
+            self._presence_rule = "custom"
+            
+            _LOGGER.info("Set custom presence template with entities: %s", self._template_entities)
+            return True
+            
+        except Exception as e:
+            _LOGGER.error("Failed to set custom template: %s", e)
+            return False
+    
+    def clear_custom_template(self) -> None:
+        """Clear the custom template and revert to standard rules."""
+        self._custom_template = None
+        self._template_entities = []
+        if self._presence_rule == "custom":
+            self._presence_rule = "anyone_home"  # Revert to default
+        
+        _LOGGER.info("Cleared custom presence template")
