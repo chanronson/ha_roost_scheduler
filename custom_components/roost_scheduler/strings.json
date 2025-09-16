@@ -20,7 +20,9 @@
         "title": "Lovelace Card",
         "description": "Would you like to add the scheduler card to your dashboard?",
         "data": {
-          "add_card": "Add Lovelace Card"
+          "add_card": "Add Lovelace Card",
+          "dashboard": "Dashboard",
+          "view": "View (leave default for main view)"
         }
       }
     },

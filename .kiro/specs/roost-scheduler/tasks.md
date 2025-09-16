@@ -80,14 +80,14 @@
     - _Requirements: 1.4, 1.5, 6.3, 6.4_
 
 - [-] 6. Implement config flow and onboarding
-  - [-] 6.1 Create basic config flow with entity selection
+  - [x] 6.1 Create basic config flow with entity selection
     - Write ConfigFlow class following HA patterns
     - Implement entity discovery and selection UI
     - Add validation for selected entities and their capabilities
     - git add and git commit to allow for rollback
     - _Requirements: 4.1, 4.2_
 
-  - [ ] 6.2 Add Lovelace card installation option
+  - [-] 6.2 Add Lovelace card installation option
     - Implement dashboard and view discovery
     - Create card installation preview and confirmation
     - Add programmatic card addition using Lovelace storage API
