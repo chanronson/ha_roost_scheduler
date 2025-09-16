@@ -1,21 +1,21 @@
 # Implementation Plan
 
-- [-] 1. Set up project structure and core interfaces
+- [x] 1. Set up project structure and core interfaces
   - Create Home Assistant custom component directory structure
   - Define core Python interfaces and data models for schedule management
   - Set up basic integration entry point with proper HA integration patterns
   - git add and git commit to allow for rollback
   - _Requirements: 4.1, 8.1_
 
-- [ ] 2. Implement data models and storage foundation
-  - [ ] 2.1 Create core data model classes and validation
+- [x] 2. Implement data models and storage foundation
+  - [x] 2.1 Create core data model classes and validation
     - Write Python dataclasses for ScheduleSlot, EntityState, BufferConfig
     - Implement JSON serialization/deserialization methods
     - Add validation methods for schedule data integrity
     - git add and git commit to allow for rollback
     - _Requirements: 5.1, 5.5_
 
-  - [ ] 2.2 Implement storage service with HA storage integration
+  - [x] 2.2 Implement storage service with HA storage integration
     - Create StorageService class using Home Assistant's storage API
     - Implement load_schedules() and save_schedules() methods
     - Add error handling for corrupted or missing storage files
@@ -23,7 +23,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 5.1, 5.2, 5.5_
 
-  - [ ] 2.3 Add backup and export functionality
+  - [x] 2.3 Add backup and export functionality
     - Implement export_backup() method to create JSON snapshots
     - Create import_backup() with validation and migration support
     - Add automatic nightly backup functionality with configurable timing
@@ -31,15 +31,15 @@
     - git add and git commit to allow for rollback
     - _Requirements: 5.2, 5.3, 5.4_
 
-- [ ] 3. Implement presence management system
-  - [ ] 3.1 Create presence manager with entity monitoring
+- [x] 3. Implement presence management system
+  - [x] 3.1 Create presence manager with entity monitoring
     - Write PresenceManager class with entity state tracking
     - Implement evaluate_presence_entities() using configured rule logic
     - Add timeout detection for stale device trackers
     - git add and git commit to allow for rollback
     - _Requirements: 3.1, 3.2, 3.3_
 
-  - [ ] 3.2 Add presence override and template support
+  - [x] 3.2 Add presence override and template support
     - Implement override boolean helper support (force_home/force_away)
     - Add custom Jinja template evaluation for advanced presence rules
     - Create mode change callback system for real-time updates
@@ -47,15 +47,15 @@
     - git add and git commit to allow for rollback
     - _Requirements: 3.4, 3.5_
 
-- [ ] 4. Implement intelligent buffering system
-  - [ ] 4.1 Create buffer manager with suppression algorithm
+- [x] 4. Implement intelligent buffering system
+  - [x] 4.1 Create buffer manager with suppression algorithm
     - Write BufferManager class with should_suppress_change() logic
     - Implement manual change tracking with timestamps
     - Add tolerance checking for current vs target values
     - git add and git commit to allow for rollback
     - _Requirements: 2.1, 2.2, 2.3_
 
-  - [ ] 4.2 Add per-slot buffer override support
+  - [x] 4.2 Add per-slot buffer override support
     - Implement get_buffer_config() with slot-specific overrides
     - Create buffer configuration validation and defaults
     - Add force-apply bypass mechanism
@@ -63,15 +63,15 @@
     - git add and git commit to allow for rollback
     - _Requirements: 2.4, 2.5_
 
-- [ ] 5. Implement core schedule management
-  - [ ] 5.1 Create schedule manager with evaluation logic
+- [x] 5. Implement core schedule management
+  - [x] 5.1 Create schedule manager with evaluation logic
     - Write ScheduleManager class with time slot evaluation
     - Implement evaluate_current_slot() for current time and presence mode
     - Add schedule grid generation for frontend consumption
     - git add and git commit to allow for rollback
     - _Requirements: 1.1, 1.2, 1.3_
 
-  - [ ] 5.2 Add schedule application and service integration
+  - [x] 5.2 Add schedule application and service integration
     - Implement apply_schedule() with buffer manager integration
     - Create update_slot() for individual schedule modifications
     - Add proper error handling for unavailable entities and service failures
@@ -79,8 +79,8 @@
     - git add and git commit to allow for rollback
     - _Requirements: 1.4, 1.5, 6.3, 6.4_
 
-- [ ] 6. Implement config flow and onboarding
-  - [ ] 6.1 Create basic config flow with entity selection
+- [-] 6. Implement config flow and onboarding
+  - [-] 6.1 Create basic config flow with entity selection
     - Write ConfigFlow class following HA patterns
     - Implement entity discovery and selection UI
     - Add validation for selected entities and their capabilities

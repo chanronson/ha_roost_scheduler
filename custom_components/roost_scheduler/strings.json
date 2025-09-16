@@ -25,10 +25,14 @@
       }
     },
     "error": {
-      "at_least_one_entity": "Please select at least one climate entity."
+      "at_least_one_entity": "Please select at least one climate entity.",
+      "entity_not_found": "One or more selected entities could not be found.",
+      "unsupported_climate_entity": "One or more selected climate entities do not support temperature control.",
+      "unsupported_presence_entity": "One or more selected presence entities are not supported."
     },
     "abort": {
-      "already_configured": "This integration is already configured."
+      "already_configured": "This integration is already configured.",
+      "no_climate_entities": "No compatible climate entities found in your Home Assistant instance."
     }
   },
   "services": {
