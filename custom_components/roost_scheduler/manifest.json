@@ -1,0 +1,12 @@
+{
+  "domain": "roost_scheduler",
+  "name": "Roost Scheduler",
+  "version": "0.3.0",
+  "documentation": "https://github.com/user/roost-scheduler",
+  "issue_tracker": "https://github.com/user/roost-scheduler/issues",
+  "dependencies": [],
+  "codeowners": ["@user"],
+  "requirements": [],
+  "config_flow": true,
+  "iot_class": "local_polling"
+}

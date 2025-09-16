@@ -1,0 +1,72 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Roost Scheduler Setup",
+        "description": "Select the climate entities you want to schedule.",
+        "data": {
+          "entities": "Climate Entities"
+        }
+      },
+      "presence": {
+        "title": "Presence Configuration",
+        "description": "Configure presence detection for Home/Away modes.",
+        "data": {
+          "presence_entities": "Presence Entities",
+          "presence_rule": "Presence Rule"
+        }
+      },
+      "card": {
+        "title": "Lovelace Card",
+        "description": "Would you like to add the scheduler card to your dashboard?",
+        "data": {
+          "add_card": "Add Lovelace Card"
+        }
+      }
+    },
+    "error": {
+      "at_least_one_entity": "Please select at least one climate entity."
+    },
+    "abort": {
+      "already_configured": "This integration is already configured."
+    }
+  },
+  "services": {
+    "apply_slot": {
+      "name": "Apply Schedule Slot",
+      "description": "Apply a specific schedule slot immediately.",
+      "fields": {
+        "entity_id": {
+          "name": "Entity ID",
+          "description": "The climate entity to apply the schedule to."
+        },
+        "day": {
+          "name": "Day",
+          "description": "Day of the week (monday, tuesday, etc.)."
+        },
+        "time": {
+          "name": "Time",
+          "description": "Time slot to apply (HH:MM format)."
+        },
+        "force": {
+          "name": "Force Apply",
+          "description": "Bypass buffer logic and apply immediately."
+        }
+      }
+    },
+    "apply_grid_now": {
+      "name": "Apply Current Schedule",
+      "description": "Apply the current schedule based on time and presence.",
+      "fields": {
+        "entity_id": {
+          "name": "Entity ID",
+          "description": "The climate entity to apply the schedule to."
+        },
+        "force": {
+          "name": "Force Apply",
+          "description": "Bypass buffer logic and apply immediately."
+        }
+      }
+    }
+  }
+}
