@@ -27,15 +27,27 @@ class BufferManager:
         )
     
     def should_suppress_change(self, entity_id: str, target_value: float, 
-                              slot_config: Dict[str, Any]) -> bool:
+                              slot_config: Dict[str, Any], force_apply: bool = False) -> bool:
         """
         Determine if a scheduled change should be suppressed due to buffering.
         
-        Implements requirements 2.1, 2.2, 2.3:
+        Implements requirements 2.1, 2.2, 2.3, 2.5:
         - 2.1: Check if current value is within tolerance and skip if satisfied
         - 2.2: Check manual change within buffer time and suppress if within tolerance  
         - 2.3: Apply scheduled target when buffer conditions not met
+        - 2.5: Force-apply bypass mechanism
+        
+        Args:
+            entity_id: The entity to check
+            target_value: The target value to apply
+            slot_config: Configuration for the current slot (may contain buffer overrides)
+            force_apply: If True, bypass all buffer logic (Requirement 2.5)
         """
+        # Requirement 2.5: Force-apply bypass mechanism
+        if force_apply:
+            _LOGGER.debug("Force apply enabled for %s, bypassing all buffer logic", entity_id)
+            return False
+        
         entity_state = self._entity_states.get(entity_id)
         if not entity_state:
             # No state tracked yet, don't suppress (Requirement 2.3)
@@ -167,13 +179,40 @@ class BufferManager:
             )
     
     def get_buffer_config(self, slot_config: Dict[str, Any]) -> BufferConfig:
-        """Get the effective buffer configuration for a slot."""
-        # Check for slot-specific override
+        """
+        Get the effective buffer configuration for a slot.
+        
+        Implements requirement 2.4: per-slot buffer overrides take precedence over global settings.
+        """
+        # Check for slot-specific override (Requirement 2.4)
         buffer_override = slot_config.get("buffer_override")
         if buffer_override:
-            return BufferConfig.from_dict(buffer_override)
+            try:
+                if isinstance(buffer_override, BufferConfig):
+                    # Already a BufferConfig object
+                    override_config = buffer_override
+                else:
+                    # Convert from dictionary
+                    override_config = BufferConfig.from_dict(buffer_override)
+                
+                _LOGGER.debug(
+                    "Using slot-specific buffer override: time=%d min, delta=%.1f, enabled=%s",
+                    override_config.time_minutes, override_config.value_delta, override_config.enabled
+                )
+                return override_config
+                
+            except (ValueError, TypeError) as e:
+                _LOGGER.warning(
+                    "Invalid buffer override configuration in slot: %s. Using global buffer config.", 
+                    str(e)
+                )
+                # Fall back to global configuration
         
         # Use global buffer configuration
+        _LOGGER.debug(
+            "Using global buffer config: time=%d min, delta=%.1f, enabled=%s",
+            self._global_buffer.time_minutes, self._global_buffer.value_delta, self._global_buffer.enabled
+        )
         return self._global_buffer
     
     def update_global_buffer(self, buffer_config: BufferConfig) -> None:
@@ -240,3 +279,47 @@ class BufferManager:
             return None
         
         return datetime.now() - entity_state.last_manual_change
+    
+    def validate_buffer_config(self, config: Dict[str, Any]) -> tuple[bool, str]:
+        """
+        Validate buffer configuration dictionary.
+        
+        Returns:
+            Tuple of (is_valid, error_message)
+        """
+        try:
+            # Try to create BufferConfig to validate
+            BufferConfig.from_dict(config)
+            return True, ""
+        except (ValueError, TypeError) as e:
+            return False, str(e)
+    
+    def create_default_buffer_config(self) -> BufferConfig:
+        """Create a default buffer configuration."""
+        return BufferConfig(
+            time_minutes=DEFAULT_BUFFER_TIME_MINUTES,
+            value_delta=DEFAULT_BUFFER_VALUE_DELTA,
+            enabled=True
+        )
+    
+    def apply_buffer_defaults(self, config: Dict[str, Any]) -> BufferConfig:
+        """
+        Apply default values to incomplete buffer configuration.
+        
+        This ensures that partial buffer overrides work correctly by filling
+        in missing values with sensible defaults.
+        """
+        defaults = {
+            "time_minutes": DEFAULT_BUFFER_TIME_MINUTES,
+            "value_delta": DEFAULT_BUFFER_VALUE_DELTA,
+            "enabled": True
+        }
+        
+        # Merge provided config with defaults
+        merged_config = {**defaults, **config}
+        
+        try:
+            return BufferConfig.from_dict(merged_config)
+        except (ValueError, TypeError) as e:
+            _LOGGER.warning("Failed to create buffer config with defaults: %s", str(e))
+            return self.create_default_buffer_config()
