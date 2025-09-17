@@ -111,7 +111,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 6.3, 6.4, 6.5_
 
-- [-] 8. Create Lovelace card foundation
+- [x] 8. Create Lovelace card foundation
   - [x] 8.1 Set up card project structure and build system
     - Create JavaScript/TypeScript project structure for the card
     - Set up build system with bundling and minification
@@ -119,7 +119,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 7.1, 7.2_
 
-  - [-] 8.2 Implement basic card rendering and configuration
+  - [x] 8.2 Implement basic card rendering and configuration
     - Create card configuration schema and validation
     - Implement basic card rendering with entity selection
     - Add card picker integration and metadata
@@ -128,7 +128,7 @@
     - _Requirements: 7.1, 7.3_
 
 - [ ] 9. Implement grid interface and interactions
-  - [ ] 9.1 Create visual grid component
+  - [-] 9.1 Create visual grid component
     - Implement time/day grid rendering with configurable resolution
     - Add visual indicators for current schedule values
     - Create responsive design for different screen sizes

@@ -1,6 +1,7 @@
 import { LitElement, html, css, PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
-import { HomeAssistant, RoostSchedulerCardConfig, ScheduleGrid } from './types';
+import { HomeAssistant, RoostSchedulerCardConfig, ScheduleGrid, GridConfig } from './types';
+import './grid-component';
 
 // Card version info for Home Assistant
 const CARD_VERSION = '0.3.0';
@@ -22,6 +23,13 @@ export class RoostSchedulerCard extends LitElement {
   @state() private scheduleData: ScheduleGrid = {};
   @state() private loading = true;
   @state() private error: string | null = null;
+  @state() private currentMode = 'home';
+  @state() private gridConfig: GridConfig = {
+    resolution_minutes: 30,
+    start_hour: 0,
+    end_hour: 24,
+    days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+  };
 
   public static async getConfigElement() {
     await import('./roost-scheduler-card-editor');
@@ -81,7 +89,17 @@ export class RoostSchedulerCard extends LitElement {
     super.updated(changedProps);
 
     if (changedProps.has('config') || changedProps.has('hass')) {
+      this.updateGridConfig();
       this.loadScheduleData();
+    }
+  }
+
+  private updateGridConfig(): void {
+    if (this.config) {
+      this.gridConfig = {
+        ...this.gridConfig,
+        resolution_minutes: this.config.resolution_minutes || 30
+      };
     }
   }
 
@@ -166,15 +184,29 @@ export class RoostSchedulerCard extends LitElement {
     }
 
     return html`
-      <div class="schedule-grid">
-        <div class="grid-placeholder">
-          <p>Schedule grid will be implemented in the next task.</p>
-          <p>Current entity: ${this.config.entity}</p>
-          <p>Resolution: ${this.config.resolution_minutes} minutes</p>
-          <p>Modes available: ${Object.keys(this.scheduleData).join(', ')}</p>
-        </div>
-      </div>
+      <schedule-grid
+        .scheduleData=${this.scheduleData}
+        .currentMode=${this.currentMode}
+        .config=${this.gridConfig}
+        .minValue=${this.getEntityMinValue()}
+        .maxValue=${this.getEntityMaxValue()}
+        @mode-changed=${this.handleModeChanged}
+      ></schedule-grid>
     `;
+  }
+
+  private getEntityMinValue(): number {
+    const entityState = this.hass?.states[this.config.entity!];
+    return entityState?.attributes?.min_temp || 10;
+  }
+
+  private getEntityMaxValue(): number {
+    const entityState = this.hass?.states[this.config.entity!];
+    return entityState?.attributes?.max_temp || 30;
+  }
+
+  private handleModeChanged(event: CustomEvent) {
+    this.currentMode = event.detail.mode;
   }
 
   static get styles() {

@@ -65,3 +65,18 @@ export interface ScheduleGrid {
     [day: string]: ScheduleSlot[];
   };
 }
+
+export interface GridCell {
+  day: string;
+  time: string;
+  value: number | null;
+  isActive: boolean;
+  isCurrentTime: boolean;
+}
+
+export interface GridConfig {
+  resolution_minutes: number;
+  start_hour: number;
+  end_hour: number;
+  days: string[];
+}
