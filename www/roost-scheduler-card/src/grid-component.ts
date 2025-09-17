@@ -25,13 +25,83 @@ export class ScheduleGridComponent extends LitElement {
   @state() private editingValue: number | null = null;
   @state() private showValueEditor = false;
   @state() private editorPosition = { x: 0, y: 0 };
+  @state() private copiedCells: Array<{ day: string; time: string; value: number }> = [];
+  @state() private showBulkEditor = false;
+  @state() private showTemplateMenu = false;
+  @state() private templates: Array<{ name: string; data: any }> = [];
+  @state() private contextMenuPosition = { x: 0, y: 0 };
+  @state() private showContextMenu = false;
 
   connectedCallback() {
     super.connectedCallback();
     this.updateCurrentTime();
+    this.loadTemplatesFromStorage();
+    
     // Update current time every minute
     setInterval(() => this.updateCurrentTime(), 60000);
+    
+    // Add keyboard shortcuts
+    document.addEventListener('keydown', this.handleGlobalKeyDown);
+    document.addEventListener('click', this.handleGlobalClick);
   }
+
+  disconnectedCallback() {
+    super.disconnectedCallback();
+    document.removeEventListener('keydown', this.handleGlobalKeyDown);
+    document.removeEventListener('click', this.handleGlobalClick);
+  }
+
+  private handleGlobalKeyDown = (event: KeyboardEvent) => {
+    if (this.selectedCells.size === 0) return;
+
+    // Check if we're in an input field
+    const target = event.target as HTMLElement;
+    if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return;
+
+    if (event.ctrlKey || event.metaKey) {
+      switch (event.key.toLowerCase()) {
+        case 'c':
+          event.preventDefault();
+          this.copySelection();
+          break;
+        case 'v':
+          event.preventDefault();
+          this.pasteSelection();
+          break;
+        case 'x':
+          event.preventDefault();
+          this.copySelection();
+          this.clearSelection();
+          break;
+      }
+    } else {
+      switch (event.key) {
+        case 'Delete':
+        case 'Backspace':
+          event.preventDefault();
+          this.clearSelection();
+          break;
+        case 'Escape':
+          this.selectedCells.clear();
+          this.showContextMenu = false;
+          this.showTemplateMenu = false;
+          this.showBulkEditor = false;
+          this.requestUpdate();
+          break;
+      }
+    }
+  };
+
+  private handleGlobalClick = (event: MouseEvent) => {
+    // Close context menu if clicking outside
+    if (this.showContextMenu) {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.context-menu')) {
+        this.showContextMenu = false;
+        this.requestUpdate();
+      }
+    }
+  };
 
   protected willUpdate(changedProps: PropertyValues) {
     if (changedProps.has('scheduleData') || changedProps.has('config') || changedProps.has('currentMode')) {
@@ -144,16 +214,36 @@ export class ScheduleGridComponent extends LitElement {
 
     return html`
       <div class="grid-container">
-        <!-- Mode selector -->
-        <div class="mode-selector">
-          ${Object.keys(this.scheduleData).map(mode => html`
+        <!-- Mode selector and toolbar -->
+        <div class="toolbar">
+          <div class="mode-selector">
+            ${Object.keys(this.scheduleData).map(mode => html`
+              <button 
+                class="mode-button ${mode === this.currentMode ? 'active' : ''}"
+                @click=${() => this.selectMode(mode)}
+              >
+                ${mode.charAt(0).toUpperCase() + mode.slice(1)}
+              </button>
+            `)}
+          </div>
+          
+          <div class="toolbar-actions">
             <button 
-              class="mode-button ${mode === this.currentMode ? 'active' : ''}"
-              @click=${() => this.selectMode(mode)}
+              class="toolbar-button"
+              @click=${() => this.showBulkEditor = true}
+              ?disabled=${this.selectedCells.size === 0}
+              title="Bulk Edit Selected Cells"
             >
-              ${mode.charAt(0).toUpperCase() + mode.slice(1)}
+              Bulk Edit
             </button>
-          `)}
+            <button 
+              class="toolbar-button"
+              @click=${() => this.showTemplateMenu = true}
+              title="Templates"
+            >
+              Templates
+            </button>
+          </div>
         </div>
 
         <!-- Grid -->
@@ -182,6 +272,7 @@ export class ScheduleGridComponent extends LitElement {
                     data-time-index="${timeIndex}"
                     @mousedown=${(e: MouseEvent) => this.handleCellMouseDown(e, dayIndex, timeIndex)}
                     @click=${(e: MouseEvent) => this.handleCellClick(e, dayIndex, timeIndex)}
+                    @contextmenu=${(e: MouseEvent) => this.handleCellRightClick(e, dayIndex, timeIndex)}
                   >
                     ${cell.isActive ? this.formatValue(cell.value) : ''}
                   </div>
@@ -235,6 +326,134 @@ export class ScheduleGridComponent extends LitElement {
                     Apply
                   </button>
                 </div>
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Context Menu -->
+        ${this.showContextMenu ? html`
+          <div 
+            class="context-menu"
+            style="left: ${this.contextMenuPosition.x}px; top: ${this.contextMenuPosition.y}px"
+          >
+            <button class="context-menu-item" @click=${this.copySelection}>
+              Copy (Ctrl+C)
+            </button>
+            <button 
+              class="context-menu-item" 
+              @click=${this.pasteSelection}
+              ?disabled=${this.copiedCells.length === 0}
+            >
+              Paste (Ctrl+V)
+            </button>
+            <button class="context-menu-item" @click=${this.fillSelection}>
+              Fill Selection
+            </button>
+            <button class="context-menu-item" @click=${this.clearSelection}>
+              Clear (Delete)
+            </button>
+            <hr class="context-menu-separator">
+            <button class="context-menu-item" @click=${this.saveAsTemplate}>
+              Save as Template
+            </button>
+            <button 
+              class="context-menu-item" 
+              @click=${() => this.showBulkEditor = true}
+            >
+              Bulk Edit
+            </button>
+          </div>
+        ` : ''}
+
+        <!-- Bulk Editor -->
+        ${this.showBulkEditor ? html`
+          <div class="modal-overlay" @click=${() => this.showBulkEditor = false}>
+            <div class="bulk-editor" @click=${(e: Event) => e.stopPropagation()}>
+              <div class="modal-header">
+                <h3>Bulk Edit ${this.selectedCells.size} Cells</h3>
+                <button class="close-btn" @click=${() => this.showBulkEditor = false}>×</button>
+              </div>
+              <div class="bulk-editor-content">
+                <div class="bulk-operation">
+                  <label>Set all to:</label>
+                  <div class="input-group">
+                    <input type="number" id="setBulkValue" min=${this.minValue} max=${this.maxValue} step="0.5" />
+                    <button @click=${() => {
+                      const input = this.shadowRoot?.querySelector('#setBulkValue') as HTMLInputElement;
+                      const value = parseFloat(input.value);
+                      if (!isNaN(value)) this.applyBulkOperation('set', value);
+                    }}>Set</button>
+                  </div>
+                </div>
+                <div class="bulk-operation">
+                  <label>Add to all:</label>
+                  <div class="input-group">
+                    <input type="number" id="addBulkValue" step="0.5" placeholder="1" />
+                    <button @click=${() => {
+                      const input = this.shadowRoot?.querySelector('#addBulkValue') as HTMLInputElement;
+                      const value = parseFloat(input.value) || 1;
+                      this.applyBulkOperation('add', value);
+                    }}>Add</button>
+                  </div>
+                </div>
+                <div class="bulk-operation">
+                  <label>Subtract from all:</label>
+                  <div class="input-group">
+                    <input type="number" id="subtractBulkValue" step="0.5" placeholder="1" />
+                    <button @click=${() => {
+                      const input = this.shadowRoot?.querySelector('#subtractBulkValue') as HTMLInputElement;
+                      const value = parseFloat(input.value) || 1;
+                      this.applyBulkOperation('subtract', value);
+                    }}>Subtract</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Template Menu -->
+        ${this.showTemplateMenu ? html`
+          <div class="modal-overlay" @click=${() => this.showTemplateMenu = false}>
+            <div class="template-menu" @click=${(e: Event) => e.stopPropagation()}>
+              <div class="modal-header">
+                <h3>Schedule Templates</h3>
+                <button class="close-btn" @click=${() => this.showTemplateMenu = false}>×</button>
+              </div>
+              <div class="template-list">
+                ${this.templates.length === 0 ? html`
+                  <div class="empty-templates">
+                    <p>No templates saved yet.</p>
+                    <p>Select cells and right-click to save a template.</p>
+                  </div>
+                ` : this.templates.map((template, index) => html`
+                  <div class="template-item">
+                    <div class="template-info">
+                      <span class="template-name">${template.name}</span>
+                      <span class="template-details">
+                        ${template.data.cells?.length || 0} cells, ${template.data.mode} mode
+                      </span>
+                    </div>
+                    <div class="template-actions">
+                      <button 
+                        class="template-action-btn apply-btn"
+                        @click=${() => this.loadTemplate(template)}
+                        ?disabled=${this.selectedCells.size === 0}
+                        title="Apply template to selected area"
+                      >
+                        Apply
+                      </button>
+                      <button 
+                        class="template-action-btn delete-btn"
+                        @click=${() => this.deleteTemplate(index)}
+                        title="Delete template"
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </div>
+                `)}
               </div>
             </div>
           </div>
@@ -425,6 +644,333 @@ export class ScheduleGridComponent extends LitElement {
     }
   }
 
+  private handleCellRightClick(event: MouseEvent, dayIndex: number, timeIndex: number) {
+    event.preventDefault();
+    
+    // Select the cell if not already selected
+    const cellKey = `${dayIndex}-${timeIndex}`;
+    if (!this.selectedCells.has(cellKey)) {
+      this.selectedCells.clear();
+      this.selectedCells.add(cellKey);
+      this.requestUpdate();
+    }
+
+    this.contextMenuPosition = { x: event.clientX, y: event.clientY };
+    this.showContextMenu = true;
+  }
+
+  private copySelection() {
+    this.copiedCells = [];
+    
+    this.selectedCells.forEach(cellKey => {
+      const [dayIndex, timeIndex] = cellKey.split('-').map(Number);
+      const day = this.config.days[dayIndex];
+      const time = this.timeLabels[timeIndex];
+      const cell = this.gridCells[dayIndex]?.[timeIndex];
+      
+      if (day && time && cell?.value !== null) {
+        this.copiedCells.push({ day, time, value: cell.value });
+      }
+    });
+
+    this.showContextMenu = false;
+    
+    // Show feedback
+    this.dispatchEvent(new CustomEvent('show-message', {
+      detail: { 
+        message: `Copied ${this.copiedCells.length} cell${this.copiedCells.length !== 1 ? 's' : ''}`,
+        type: 'info'
+      },
+      bubbles: true,
+      composed: true
+    }));
+  }
+
+  private pasteSelection() {
+    if (this.copiedCells.length === 0) return;
+
+    const changes: Array<{ day: string; time: string; value: number }> = [];
+    
+    // Get the first selected cell as the paste anchor
+    const firstSelectedKey = Array.from(this.selectedCells)[0];
+    if (!firstSelectedKey) return;
+
+    const [anchorDayIndex, anchorTimeIndex] = firstSelectedKey.split('-').map(Number);
+    
+    // Calculate relative positions from the first copied cell
+    const firstCopiedCell = this.copiedCells[0];
+    const firstCopiedDayIndex = this.config.days.indexOf(firstCopiedCell.day);
+    const firstCopiedTimeIndex = this.timeLabels.indexOf(firstCopiedCell.time);
+
+    this.copiedCells.forEach(copiedCell => {
+      const copiedDayIndex = this.config.days.indexOf(copiedCell.day);
+      const copiedTimeIndex = this.timeLabels.indexOf(copiedCell.time);
+      
+      // Calculate relative offset
+      const dayOffset = copiedDayIndex - firstCopiedDayIndex;
+      const timeOffset = copiedTimeIndex - firstCopiedTimeIndex;
+      
+      // Apply offset to anchor position
+      const targetDayIndex = anchorDayIndex + dayOffset;
+      const targetTimeIndex = anchorTimeIndex + timeOffset;
+      
+      // Check bounds
+      if (targetDayIndex >= 0 && targetDayIndex < this.config.days.length &&
+          targetTimeIndex >= 0 && targetTimeIndex < this.timeLabels.length) {
+        
+        const targetDay = this.config.days[targetDayIndex];
+        const targetTime = this.timeLabels[targetTimeIndex];
+        
+        changes.push({ day: targetDay, time: targetTime, value: copiedCell.value });
+      }
+    });
+
+    if (changes.length > 0) {
+      this.dispatchEvent(new CustomEvent('schedule-changed', {
+        detail: { 
+          mode: this.currentMode,
+          changes 
+        },
+        bubbles: true,
+        composed: true
+      }));
+    }
+
+    this.showContextMenu = false;
+  }
+
+  private clearSelection() {
+    const changes: Array<{ day: string; time: string; value: number | null }> = [];
+    
+    this.selectedCells.forEach(cellKey => {
+      const [dayIndex, timeIndex] = cellKey.split('-').map(Number);
+      const day = this.config.days[dayIndex];
+      const time = this.timeLabels[timeIndex];
+      
+      if (day && time) {
+        changes.push({ day, time, value: null });
+      }
+    });
+
+    if (changes.length > 0) {
+      this.dispatchEvent(new CustomEvent('schedule-changed', {
+        detail: { 
+          mode: this.currentMode,
+          changes 
+        },
+        bubbles: true,
+        composed: true
+      }));
+    }
+
+    this.showContextMenu = false;
+  }
+
+  private fillSelection() {
+    if (this.selectedCells.size === 0) return;
+
+    // Get the value from the first selected cell
+    const firstSelectedKey = Array.from(this.selectedCells)[0];
+    const [dayIndex, timeIndex] = firstSelectedKey.split('-').map(Number);
+    const firstCell = this.gridCells[dayIndex]?.[timeIndex];
+    
+    if (!firstCell || firstCell.value === null) {
+      this.showValueEditor = true;
+      this.editorPosition = this.contextMenuPosition;
+      this.editingValue = Math.round((this.minValue + this.maxValue) / 2);
+    } else {
+      const fillValue = firstCell.value;
+      const changes: Array<{ day: string; time: string; value: number }> = [];
+      
+      this.selectedCells.forEach(cellKey => {
+        const [dayIndex, timeIndex] = cellKey.split('-').map(Number);
+        const day = this.config.days[dayIndex];
+        const time = this.timeLabels[timeIndex];
+        
+        if (day && time) {
+          changes.push({ day, time, value: fillValue });
+        }
+      });
+
+      if (changes.length > 0) {
+        this.dispatchEvent(new CustomEvent('schedule-changed', {
+          detail: { 
+            mode: this.currentMode,
+            changes 
+          },
+          bubbles: true,
+          composed: true
+        }));
+      }
+    }
+
+    this.showContextMenu = false;
+  }
+
+  private saveAsTemplate() {
+    const templateName = prompt('Enter template name:');
+    if (!templateName) return;
+
+    const templateData = {
+      mode: this.currentMode,
+      cells: Array.from(this.selectedCells).map(cellKey => {
+        const [dayIndex, timeIndex] = cellKey.split('-').map(Number);
+        const day = this.config.days[dayIndex];
+        const time = this.timeLabels[timeIndex];
+        const cell = this.gridCells[dayIndex]?.[timeIndex];
+        
+        return {
+          day,
+          time,
+          value: cell?.value || null,
+          dayOffset: dayIndex,
+          timeOffset: timeIndex
+        };
+      }).filter(cell => cell.value !== null)
+    };
+
+    this.templates.push({ name: templateName, data: templateData });
+    
+    // Save to localStorage
+    localStorage.setItem('roost-scheduler-templates', JSON.stringify(this.templates));
+    
+    this.showContextMenu = false;
+    
+    this.dispatchEvent(new CustomEvent('show-message', {
+      detail: { 
+        message: `Template "${templateName}" saved`,
+        type: 'success'
+      },
+      bubbles: true,
+      composed: true
+    }));
+  }
+
+  private loadTemplate(template: any) {
+    if (!template.data || !template.data.cells) return;
+
+    const changes: Array<{ day: string; time: string; value: number }> = [];
+    
+    // Get the first selected cell as the anchor point
+    const firstSelectedKey = Array.from(this.selectedCells)[0];
+    if (!firstSelectedKey) return;
+
+    const [anchorDayIndex, anchorTimeIndex] = firstSelectedKey.split('-').map(Number);
+    
+    // Calculate the offset from the template's first cell
+    const templateCells = template.data.cells;
+    if (templateCells.length === 0) return;
+
+    const firstTemplateCell = templateCells[0];
+    const baseDayOffset = firstTemplateCell.dayOffset;
+    const baseTimeOffset = firstTemplateCell.timeOffset;
+
+    templateCells.forEach((templateCell: any) => {
+      // Calculate relative position within the template
+      const relativeDayOffset = templateCell.dayOffset - baseDayOffset;
+      const relativeTimeOffset = templateCell.timeOffset - baseTimeOffset;
+      
+      // Apply to anchor position
+      const targetDayIndex = anchorDayIndex + relativeDayOffset;
+      const targetTimeIndex = anchorTimeIndex + relativeTimeOffset;
+      
+      // Check bounds
+      if (targetDayIndex >= 0 && targetDayIndex < this.config.days.length &&
+          targetTimeIndex >= 0 && targetTimeIndex < this.timeLabels.length) {
+        
+        const targetDay = this.config.days[targetDayIndex];
+        const targetTime = this.timeLabels[targetTimeIndex];
+        
+        changes.push({ day: targetDay, time: targetTime, value: templateCell.value });
+      }
+    });
+
+    if (changes.length > 0) {
+      this.dispatchEvent(new CustomEvent('schedule-changed', {
+        detail: { 
+          mode: this.currentMode,
+          changes 
+        },
+        bubbles: true,
+        composed: true
+      }));
+    }
+
+    this.showTemplateMenu = false;
+    this.showContextMenu = false;
+  }
+
+  private deleteTemplate(templateIndex: number) {
+    if (confirm(`Delete template "${this.templates[templateIndex].name}"?`)) {
+      this.templates.splice(templateIndex, 1);
+      localStorage.setItem('roost-scheduler-templates', JSON.stringify(this.templates));
+      this.requestUpdate();
+    }
+  }
+
+  private loadTemplatesFromStorage() {
+    try {
+      const stored = localStorage.getItem('roost-scheduler-templates');
+      if (stored) {
+        this.templates = JSON.parse(stored);
+      }
+    } catch (error) {
+      console.warn('Failed to load templates from storage:', error);
+      this.templates = [];
+    }
+  }
+
+  private applyBulkOperation(operation: string, value?: number) {
+    if (this.selectedCells.size === 0) return;
+
+    const changes: Array<{ day: string; time: string; value: number }> = [];
+    
+    this.selectedCells.forEach(cellKey => {
+      const [dayIndex, timeIndex] = cellKey.split('-').map(Number);
+      const day = this.config.days[dayIndex];
+      const time = this.timeLabels[timeIndex];
+      const currentCell = this.gridCells[dayIndex]?.[timeIndex];
+      
+      if (day && time) {
+        let newValue: number;
+        
+        switch (operation) {
+          case 'add':
+            newValue = (currentCell?.value || 0) + (value || 1);
+            break;
+          case 'subtract':
+            newValue = (currentCell?.value || 0) - (value || 1);
+            break;
+          case 'multiply':
+            newValue = (currentCell?.value || 0) * (value || 1);
+            break;
+          case 'set':
+            newValue = value || 0;
+            break;
+          default:
+            return;
+        }
+        
+        // Clamp to valid range
+        newValue = Math.max(this.minValue, Math.min(this.maxValue, newValue));
+        changes.push({ day, time, value: newValue });
+      }
+    });
+
+    if (changes.length > 0) {
+      this.dispatchEvent(new CustomEvent('schedule-changed', {
+        detail: { 
+          mode: this.currentMode,
+          changes 
+        },
+        bubbles: true,
+        composed: true
+      }));
+    }
+
+    this.showBulkEditor = false;
+  }
+
   private validateValue(value: number): { isValid: boolean; message?: string } {
     if (isNaN(value)) {
       return { isValid: false, message: 'Please enter a valid number' };
@@ -460,6 +1006,39 @@ export class ScheduleGridComponent extends LitElement {
         display: flex;
         flex-direction: column;
         gap: 16px;
+      }
+
+      .toolbar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      }
+
+      .toolbar-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .toolbar-button {
+        padding: 6px 12px;
+        border: 1px solid var(--divider-color);
+        border-radius: 4px;
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        cursor: pointer;
+        font-size: 0.9em;
+        transition: all 0.2s ease;
+      }
+
+      .toolbar-button:hover:not(:disabled) {
+        background: var(--secondary-background-color);
+      }
+
+      .toolbar-button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
 
       .grid-loading {
@@ -765,6 +1344,215 @@ export class ScheduleGridComponent extends LitElement {
         display: flex;
         justify-content: space-between;
         font-size: 0.8em;
+      }
+
+      /* Context Menu Styles */
+      .context-menu {
+        position: fixed;
+        background: var(--card-background-color);
+        border: 1px solid var(--divider-color);
+        border-radius: 4px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        z-index: 1001;
+        min-width: 160px;
+        padding: 4px 0;
+      }
+
+      .context-menu-item {
+        display: block;
+        width: 100%;
+        padding: 8px 16px;
+        border: none;
+        background: none;
+        color: var(--primary-text-color);
+        text-align: left;
+        cursor: pointer;
+        font-size: 0.9em;
+        transition: background-color 0.2s ease;
+      }
+
+      .context-menu-item:hover:not(:disabled) {
+        background: var(--secondary-background-color);
+      }
+
+      .context-menu-item:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .context-menu-separator {
+        margin: 4px 0;
+        border: none;
+        border-top: 1px solid var(--divider-color);
+      }
+
+      /* Modal Styles */
+      .modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 20px;
+      }
+
+      .bulk-editor, .template-menu {
+        background: var(--card-background-color);
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        max-width: 500px;
+        width: 100%;
+        max-height: 80vh;
+        overflow-y: auto;
+        border: 1px solid var(--divider-color);
+      }
+
+      .modal-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 16px;
+        border-bottom: 1px solid var(--divider-color);
+      }
+
+      .modal-header h3 {
+        margin: 0;
+        font-size: 1.1em;
+        font-weight: 500;
+      }
+
+      /* Bulk Editor Styles */
+      .bulk-editor-content {
+        padding: 16px;
+      }
+
+      .bulk-operation {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+
+      .bulk-operation label {
+        min-width: 100px;
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+      }
+
+      .input-group {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+      }
+
+      .input-group input {
+        padding: 6px 8px;
+        border: 1px solid var(--divider-color);
+        border-radius: 4px;
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        width: 80px;
+      }
+
+      .input-group button {
+        padding: 6px 12px;
+        border: 1px solid var(--primary-color);
+        border-radius: 4px;
+        background: var(--primary-color);
+        color: var(--text-primary-color);
+        cursor: pointer;
+        font-size: 0.9em;
+      }
+
+      .input-group button:hover {
+        opacity: 0.9;
+      }
+
+      /* Template Menu Styles */
+      .template-list {
+        padding: 16px;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+
+      .empty-templates {
+        text-align: center;
+        color: var(--secondary-text-color);
+        padding: 32px 16px;
+      }
+
+      .empty-templates p {
+        margin: 8px 0;
+      }
+
+      .template-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px;
+        border: 1px solid var(--divider-color);
+        border-radius: 4px;
+        margin-bottom: 8px;
+        background: var(--secondary-background-color);
+      }
+
+      .template-info {
+        flex: 1;
+      }
+
+      .template-name {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 4px;
+      }
+
+      .template-details {
+        font-size: 0.8em;
+        color: var(--secondary-text-color);
+      }
+
+      .template-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .template-action-btn {
+        padding: 4px 8px;
+        border: 1px solid var(--divider-color);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 0.8em;
+        transition: all 0.2s ease;
+      }
+
+      .template-action-btn.apply-btn {
+        background: var(--primary-color);
+        color: var(--text-primary-color);
+        border-color: var(--primary-color);
+      }
+
+      .template-action-btn.apply-btn:hover:not(:disabled) {
+        opacity: 0.9;
+      }
+
+      .template-action-btn.apply-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .template-action-btn.delete-btn {
+        background: var(--error-color, #f44336);
+        color: white;
+        border-color: var(--error-color, #f44336);
+      }
+
+      .template-action-btn.delete-btn:hover {
+        opacity: 0.9;
       }
 
       /* Responsive design */

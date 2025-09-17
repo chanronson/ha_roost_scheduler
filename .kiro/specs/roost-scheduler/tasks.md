@@ -160,14 +160,14 @@
     - _Requirements: 7.3, 7.4, 7.5_
 
 - [-] 11. Implement resolution migration and advanced features
-  - [-] 11.1 Add schedule resolution migration
+  - [x] 11.1 Add schedule resolution migration
     - Create migration logic for changing time resolution
     - Implement preview system for resolution changes
     - Add user confirmation before applying migrations
     - git add and git commit to allow for rollback
     - _Requirements: 1.4_
 
-  - [ ] 11.2 Add advanced grid features
+  - [-] 11.2 Add advanced grid features
     - Implement copy/paste functionality for schedule slots
     - Add bulk edit operations for multiple slots
     - Create schedule templates and quick-apply options
