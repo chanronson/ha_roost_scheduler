@@ -59,6 +59,14 @@ class PresenceManager:
             self._current_mode = mode
             _LOGGER.info("Presence mode changed from %s to %s", old_mode, mode)
             
+            # Emit event for real-time updates
+            from .const import DOMAIN
+            self.hass.bus.async_fire(f"{DOMAIN}_presence_changed", {
+                "old_mode": old_mode,
+                "new_mode": mode,
+                "timestamp": datetime.now().isoformat()
+            })
+            
             # Notify callbacks
             for callback in self._mode_change_callbacks:
                 try:

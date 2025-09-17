@@ -127,7 +127,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 7.1, 7.3_
 
-- [ ] 9. Implement grid interface and interactions
+- [x] 9. Implement grid interface and interactions
   - [x] 9.1 Create visual grid component
     - Implement time/day grid rendering with configurable resolution
     - Add visual indicators for current schedule values
@@ -135,7 +135,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 1.1, 1.2_
 
-  - [-] 9.2 Add grid interaction functionality
+  - [x] 9.2 Add grid interaction functionality
     - Implement click-and-drag selection for time slots
     - Add value editing with validation and range checking
     - Create visual feedback for user interactions
@@ -143,8 +143,8 @@
     - git add and git commit to allow for rollback
     - _Requirements: 1.2, 1.3, 1.4_
 
-- [ ] 10. Implement real-time synchronization
-  - [ ] 10.1 Add WebSocket communication for live updates
+- [-] 10. Implement real-time synchronization
+  - [-] 10.1 Add WebSocket communication for live updates
     - Implement WebSocket connection management
     - Create real-time state synchronization between card and backend
     - Add connection status indicators and error handling

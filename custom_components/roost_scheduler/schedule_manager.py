@@ -161,7 +161,7 @@ class ScheduleManager:
             _LOGGER.error("Error applying schedule for %s: %s", entity_id, e)
             return False
     
-    async def update_slot(self, entity_id: str, day: str, time_slot: str, target: Dict[str, Any]) -> bool:
+    async def update_slot(self, entity_id: str, mode: str, day: str, time_slot: str, target: Dict[str, Any]) -> bool:
         """
         Update a specific schedule slot for individual schedule modifications.
         
@@ -169,6 +169,7 @@ class ScheduleManager:
         
         Args:
             entity_id: The entity to update schedule for
+            mode: The presence mode (home/away)
             day: Day of week (monday, tuesday, etc.)
             time_slot: Time slot identifier (e.g., "08:00-09:00")
             target: Target configuration including temperature and domain
@@ -218,8 +219,10 @@ class ScheduleManager:
                 _LOGGER.error("Invalid target temperature: %s", target_temp)
                 return False
             
-            # Get current mode (default to home for slot updates)
-            current_mode = await self.presence_manager.get_current_mode()
+            # Use provided mode for slot updates
+            if mode not in [MODE_HOME, MODE_AWAY]:
+                _LOGGER.error("Invalid mode: %s", mode)
+                return False
             
             # Create new schedule slot
             new_slot = ScheduleSlot(
@@ -240,13 +243,13 @@ class ScheduleManager:
                     _LOGGER.warning("Invalid buffer override in slot update: %s", e)
             
             # Update the schedule data
-            if current_mode not in self._schedule_data.schedules:
-                self._schedule_data.schedules[current_mode] = {}
+            if mode not in self._schedule_data.schedules:
+                self._schedule_data.schedules[mode] = {}
             
-            if day.lower() not in self._schedule_data.schedules[current_mode]:
-                self._schedule_data.schedules[current_mode][day.lower()] = []
+            if day.lower() not in self._schedule_data.schedules[mode]:
+                self._schedule_data.schedules[mode][day.lower()] = []
             
-            day_slots = self._schedule_data.schedules[current_mode][day.lower()]
+            day_slots = self._schedule_data.schedules[mode][day.lower()]
             
             # Find and replace existing slot or add new one
             slot_updated = False
@@ -270,6 +273,21 @@ class ScheduleManager:
             
             # Save updated schedule data
             await self.storage_service.save_schedules(self._schedule_data.to_dict())
+            
+            # Emit event for real-time updates
+            from .const import DOMAIN
+            self.hass.bus.async_fire(f"{DOMAIN}_schedule_updated", {
+                "entity_id": entity_id,
+                "mode": mode,
+                "day": day.lower(),
+                "time_slot": time_slot,
+                "target_value": target_temp,
+                "changes": [{
+                    "day": day.lower(),
+                    "time": time_slot,
+                    "value": target_temp
+                }]
+            })
             
             _LOGGER.info("Updated schedule slot for %s on %s: %s (%.1f°C)", 
                         entity_id, day, time_slot, target_temp)

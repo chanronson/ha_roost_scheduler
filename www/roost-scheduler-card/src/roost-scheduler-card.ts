@@ -1,6 +1,7 @@
 import { LitElement, html, css, PropertyValues } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { HomeAssistant, RoostSchedulerCardConfig, ScheduleGrid, GridConfig } from './types';
+import { WebSocketManager, ConnectionStatus, WebSocketEvent } from './websocket-manager';
 import './grid-component';
 
 // Card version info for Home Assistant
@@ -24,12 +25,15 @@ export class RoostSchedulerCard extends LitElement {
   @state() private loading = true;
   @state() private error: string | null = null;
   @state() private currentMode = 'home';
+  @state() private connectionStatus: ConnectionStatus = { connected: false, reconnecting: false };
   @state() private gridConfig: GridConfig = {
     resolution_minutes: 30,
     start_hour: 0,
     end_hour: 24,
     days: ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
   };
+  
+  private wsManager: WebSocketManager | null = null;
 
   public static async getConfigElement() {
     await import('./roost-scheduler-card-editor');
@@ -90,8 +94,13 @@ export class RoostSchedulerCard extends LitElement {
 
     if (changedProps.has('config') || changedProps.has('hass')) {
       this.updateGridConfig();
-      this.loadScheduleData();
+      this.setupWebSocketConnection();
     }
+  }
+
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    this.cleanupWebSocketConnection();
   }
 
   private updateGridConfig(): void {
@@ -103,8 +112,36 @@ export class RoostSchedulerCard extends LitElement {
     }
   }
 
-  private async loadScheduleData(): Promise<void> {
+  private async setupWebSocketConnection(): Promise<void> {
     if (!this.hass || !this.config.entity) {
+      return;
+    }
+
+    // Clean up existing connection
+    this.cleanupWebSocketConnection();
+
+    // Create new WebSocket manager
+    this.wsManager = new WebSocketManager(this.hass, this.config.entity);
+
+    // Set up event listeners
+    this.wsManager.addEventListener('schedule_updated', this.handleScheduleUpdate.bind(this));
+    this.wsManager.addEventListener('presence_changed', this.handlePresenceChange.bind(this));
+    this.wsManager.addStatusListener(this.handleConnectionStatusChange.bind(this));
+
+    // Load initial data and connect
+    await this.loadScheduleData();
+    await this.wsManager.connect();
+  }
+
+  private cleanupWebSocketConnection(): void {
+    if (this.wsManager) {
+      this.wsManager.disconnect();
+      this.wsManager = null;
+    }
+  }
+
+  private async loadScheduleData(): Promise<void> {
+    if (!this.wsManager) {
       return;
     }
 
@@ -112,18 +149,44 @@ export class RoostSchedulerCard extends LitElement {
       this.loading = true;
       this.error = null;
 
-      // Call the backend service to get schedule data
-      const response = await this.hass.callWS({
-        type: 'roost_scheduler/get_schedule_grid',
-        entity_id: this.config.entity,
-      });
-
+      const response = await this.wsManager.getScheduleGrid();
       this.scheduleData = response.schedules || {};
+      this.currentMode = response.current_mode || 'home';
     } catch (err) {
       this.error = `Failed to load schedule data: ${err}`;
       console.error('Error loading schedule data:', err);
     } finally {
       this.loading = false;
+    }
+  }
+
+  private handleScheduleUpdate(event: WebSocketEvent): void {
+    if (event.type === 'schedule_updated') {
+      console.log('Received schedule update:', event.data);
+      // Reload schedule data to get the latest state
+      this.loadScheduleData();
+    }
+  }
+
+  private handlePresenceChange(event: WebSocketEvent): void {
+    if (event.type === 'presence_changed') {
+      console.log('Presence mode changed:', event.data);
+      this.currentMode = event.data.new_mode;
+      // Optionally reload data if needed
+      this.loadScheduleData();
+    }
+  }
+
+  private handleConnectionStatusChange(status: ConnectionStatus): void {
+    this.connectionStatus = status;
+    
+    if (status.error && !status.connected && !status.reconnecting) {
+      this.error = `Connection error: ${status.error}`;
+    } else if (status.connected) {
+      // Clear any connection-related errors when reconnected
+      if (this.error && this.error.includes('Connection error')) {
+        this.error = null;
+      }
     }
   }
 
@@ -157,7 +220,10 @@ export class RoostSchedulerCard extends LitElement {
                 <div class="name">
                   ${this.config.name || entityState.attributes.friendly_name || this.config.entity}
                 </div>
-                <div class="version">v${CARD_VERSION}</div>
+                <div class="header-info">
+                  ${this.renderConnectionStatus()}
+                  <div class="version">v${CARD_VERSION}</div>
+                </div>
               </div>
             `
           : ''}
@@ -214,21 +280,23 @@ export class RoostSchedulerCard extends LitElement {
   private async handleScheduleChanged(event: CustomEvent) {
     const { mode, changes } = event.detail;
     
+    if (!this.wsManager) {
+      this.error = 'WebSocket connection not available';
+      return;
+    }
+    
     try {
-      // Call the backend service to update schedules
-      await this.hass.callWS({
-        type: 'roost_scheduler/update_schedule',
-        entity_id: this.config.entity,
-        mode: mode,
-        changes: changes
-      });
-
-      // Reload schedule data to reflect changes
-      await this.loadScheduleData();
+      // Use WebSocket manager to update schedules
+      await this.wsManager.updateSchedule(mode, changes);
+      
+      // The real-time update will be received via WebSocket event
+      // No need to manually reload data here
     } catch (err) {
       console.error('Failed to update schedule:', err);
-      // Show error to user (could be enhanced with a toast notification)
       this.error = `Failed to update schedule: ${err}`;
+      
+      // Reload data as fallback in case of error
+      await this.loadScheduleData();
     }
   }
 
@@ -238,6 +306,30 @@ export class RoostSchedulerCard extends LitElement {
     
     // This could be used for additional functionality like showing detailed info
     // or quick actions for individual cells
+  }
+
+  private renderConnectionStatus() {
+    const { connected, reconnecting, error } = this.connectionStatus;
+    
+    if (connected) {
+      return html`
+        <div class="connection-status connected" title="Connected">
+          <div class="status-dot"></div>
+        </div>
+      `;
+    } else if (reconnecting) {
+      return html`
+        <div class="connection-status reconnecting" title="Reconnecting...">
+          <div class="status-dot"></div>
+        </div>
+      `;
+    } else {
+      return html`
+        <div class="connection-status disconnected" title="${error || 'Disconnected'}">
+          <div class="status-dot"></div>
+        </div>
+      `;
+    }
   }
 
   static get styles() {
@@ -266,10 +358,51 @@ export class RoostSchedulerCard extends LitElement {
         color: var(--primary-text-color);
       }
 
+      .header-info {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
       .version {
         font-size: 0.8em;
         color: var(--secondary-text-color);
         opacity: 0.7;
+      }
+
+      .connection-status {
+        display: flex;
+        align-items: center;
+        cursor: help;
+      }
+
+      .status-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        transition: background-color 0.3s ease;
+      }
+
+      .connection-status.connected .status-dot {
+        background-color: var(--success-color, #4caf50);
+      }
+
+      .connection-status.reconnecting .status-dot {
+        background-color: var(--warning-color, #ff9800);
+        animation: pulse 1.5s infinite;
+      }
+
+      .connection-status.disconnected .status-dot {
+        background-color: var(--error-color, #f44336);
+      }
+
+      @keyframes pulse {
+        0%, 100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.5;
+        }
       }
 
       .card-content {
