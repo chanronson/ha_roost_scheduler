@@ -18,6 +18,13 @@ export class ScheduleGridComponent extends LitElement {
   @state() private gridCells: GridCell[][] = [];
   @state() private timeLabels: string[] = [];
   @state() private currentTime = new Date();
+  @state() private isDragging = false;
+  @state() private dragStartCell: { day: number; time: number } | null = null;
+  @state() private dragEndCell: { day: number; time: number } | null = null;
+  @state() private selectedCells: Set<string> = new Set();
+  @state() private editingValue: number | null = null;
+  @state() private showValueEditor = false;
+  @state() private editorPosition = { x: 0, y: 0 };
 
   connectedCallback() {
     super.connectedCallback();
@@ -163,18 +170,75 @@ export class ScheduleGridComponent extends LitElement {
           ${this.config.days.map((day, dayIndex) => html`
             <div class="grid-row">
               <div class="day-label">${day.charAt(0).toUpperCase() + day.slice(1)}</div>
-              ${this.gridCells[dayIndex]?.map(cell => html`
-                <div 
-                  class="grid-cell ${cell.isActive ? 'active' : ''} ${cell.isCurrentTime ? 'current-time' : ''}"
-                  style="background-color: ${this.getValueColor(cell.value)}"
-                  title="${cell.day} ${cell.time}${cell.value ? ` - ${this.formatValue(cell.value)}` : ''}"
-                >
-                  ${cell.isActive ? this.formatValue(cell.value) : ''}
-                </div>
-              `) || []}
+              ${this.gridCells[dayIndex]?.map((cell, timeIndex) => {
+                const cellKey = `${dayIndex}-${timeIndex}`;
+                const isSelected = this.selectedCells.has(cellKey);
+                return html`
+                  <div 
+                    class="grid-cell ${cell.isActive ? 'active' : ''} ${cell.isCurrentTime ? 'current-time' : ''} ${isSelected ? 'selected' : ''}"
+                    style="background-color: ${this.getValueColor(cell.value)}"
+                    title="${cell.day} ${cell.time}${cell.value ? ` - ${this.formatValue(cell.value)}` : ''}"
+                    data-day-index="${dayIndex}"
+                    data-time-index="${timeIndex}"
+                    @mousedown=${(e: MouseEvent) => this.handleCellMouseDown(e, dayIndex, timeIndex)}
+                    @click=${(e: MouseEvent) => this.handleCellClick(e, dayIndex, timeIndex)}
+                  >
+                    ${cell.isActive ? this.formatValue(cell.value) : ''}
+                  </div>
+                `;
+              }) || []}
             </div>
           `)}
         </div>
+
+        <!-- Value Editor -->
+        ${this.showValueEditor ? html`
+          <div class="value-editor-overlay" @click=${this.closeValueEditor}>
+            <div 
+              class="value-editor"
+              style="left: ${this.editorPosition.x}px; top: ${this.editorPosition.y}px"
+              @click=${(e: Event) => e.stopPropagation()}
+              @keydown=${this.handleKeyDown}
+            >
+              <div class="editor-header">
+                <span>Set Temperature</span>
+                <button class="close-btn" @click=${this.closeValueEditor}>×</button>
+              </div>
+              <div class="editor-content">
+                <div class="value-input-group">
+                  <input
+                    type="number"
+                    .value=${this.editingValue?.toString() || ''}
+                    @input=${this.handleValueChange}
+                    min=${this.minValue}
+                    max=${this.maxValue}
+                    step="0.5"
+                    class="value-input"
+                    placeholder="Temperature"
+                    autofocus
+                  />
+                  <span class="unit">°C</span>
+                </div>
+                <div class="range-info">
+                  Range: ${this.minValue}° - ${this.maxValue}°
+                </div>
+                <div class="selection-info">
+                  ${this.selectedCells.size} cell${this.selectedCells.size !== 1 ? 's' : ''} selected
+                </div>
+                <div class="editor-actions">
+                  <button class="cancel-btn" @click=${this.closeValueEditor}>Cancel</button>
+                  <button 
+                    class="apply-btn" 
+                    @click=${this.applyValueToSelection}
+                    ?disabled=${this.editingValue === null || this.editingValue < this.minValue || this.editingValue > this.maxValue}
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        ` : ''}
 
         <!-- Legend -->
         <div class="legend">
@@ -203,6 +267,186 @@ export class ScheduleGridComponent extends LitElement {
       bubbles: true,
       composed: true
     }));
+  }
+
+  private handleCellMouseDown(event: MouseEvent, dayIndex: number, timeIndex: number) {
+    event.preventDefault();
+    this.isDragging = true;
+    this.dragStartCell = { day: dayIndex, time: timeIndex };
+    this.dragEndCell = { day: dayIndex, time: timeIndex };
+    this.updateSelectedCells();
+    
+    // Add global mouse event listeners
+    document.addEventListener('mousemove', this.handleMouseMove);
+    document.addEventListener('mouseup', this.handleMouseUp);
+  }
+
+  private handleMouseMove = (event: MouseEvent) => {
+    if (!this.isDragging || !this.dragStartCell) return;
+
+    const cell = this.getCellFromMouseEvent(event);
+    if (cell) {
+      this.dragEndCell = cell;
+      this.updateSelectedCells();
+    }
+  };
+
+  private handleMouseUp = (event: MouseEvent) => {
+    if (!this.isDragging) return;
+
+    this.isDragging = false;
+    document.removeEventListener('mousemove', this.handleMouseMove);
+    document.removeEventListener('mouseup', this.handleMouseUp);
+
+    // Show value editor if we have selected cells
+    if (this.selectedCells.size > 0) {
+      this.showValueEditor = true;
+      this.editorPosition = { x: event.clientX, y: event.clientY };
+      this.editingValue = this.getAverageValueFromSelection();
+    }
+  };
+
+  private getCellFromMouseEvent(event: MouseEvent): { day: number; time: number } | null {
+    // Fallback for test environments where elementFromPoint is not available
+    if (typeof document.elementFromPoint !== 'function') {
+      return null;
+    }
+    
+    const element = document.elementFromPoint(event.clientX, event.clientY);
+    if (!element || !element.classList.contains('grid-cell')) return null;
+
+    const dayIndex = parseInt(element.getAttribute('data-day-index') || '-1');
+    const timeIndex = parseInt(element.getAttribute('data-time-index') || '-1');
+
+    if (dayIndex >= 0 && timeIndex >= 0) {
+      return { day: dayIndex, time: timeIndex };
+    }
+    return null;
+  }
+
+  private updateSelectedCells() {
+    if (!this.dragStartCell || !this.dragEndCell) return;
+
+    this.selectedCells.clear();
+    
+    const startDay = Math.min(this.dragStartCell.day, this.dragEndCell.day);
+    const endDay = Math.max(this.dragStartCell.day, this.dragEndCell.day);
+    const startTime = Math.min(this.dragStartCell.time, this.dragEndCell.time);
+    const endTime = Math.max(this.dragStartCell.time, this.dragEndCell.time);
+
+    for (let day = startDay; day <= endDay; day++) {
+      for (let time = startTime; time <= endTime; time++) {
+        this.selectedCells.add(`${day}-${time}`);
+      }
+    }
+    this.requestUpdate();
+  }
+
+  private getAverageValueFromSelection(): number {
+    let total = 0;
+    let count = 0;
+
+    this.selectedCells.forEach(cellKey => {
+      const [dayIndex, timeIndex] = cellKey.split('-').map(Number);
+      const cell = this.gridCells[dayIndex]?.[timeIndex];
+      if (cell?.value !== null) {
+        total += cell.value;
+        count++;
+      }
+    });
+
+    return count > 0 ? Math.round(total / count) : Math.round((this.minValue + this.maxValue) / 2);
+  }
+
+  private handleValueChange(event: Event) {
+    const input = event.target as HTMLInputElement;
+    const value = parseFloat(input.value);
+    
+    if (!isNaN(value)) {
+      this.editingValue = Math.max(this.minValue, Math.min(this.maxValue, value));
+    }
+  }
+
+  private applyValueToSelection() {
+    if (this.editingValue === null || this.selectedCells.size === 0) return;
+
+    const changes: Array<{ day: string; time: string; value: number }> = [];
+
+    this.selectedCells.forEach(cellKey => {
+      const [dayIndex, timeIndex] = cellKey.split('-').map(Number);
+      const day = this.config.days[dayIndex];
+      const time = this.timeLabels[timeIndex];
+      
+      if (day && time) {
+        changes.push({ day, time, value: this.editingValue! });
+      }
+    });
+
+    // Emit schedule change event
+    this.dispatchEvent(new CustomEvent('schedule-changed', {
+      detail: { 
+        mode: this.currentMode,
+        changes 
+      },
+      bubbles: true,
+      composed: true
+    }));
+
+    this.closeValueEditor();
+  }
+
+  private closeValueEditor() {
+    this.showValueEditor = false;
+    this.editingValue = null;
+    this.selectedCells.clear();
+    this.dragStartCell = null;
+    this.dragEndCell = null;
+    this.requestUpdate();
+  }
+
+  private handleCellClick(event: MouseEvent, dayIndex: number, timeIndex: number) {
+    // Single click for quick edit
+    if (!this.isDragging) {
+      const day = this.config.days[dayIndex];
+      const time = this.timeLabels[timeIndex];
+      const currentValue = this.gridCells[dayIndex]?.[timeIndex]?.value;
+
+      this.dispatchEvent(new CustomEvent('cell-clicked', {
+        detail: { 
+          day, 
+          time, 
+          currentValue,
+          dayIndex,
+          timeIndex
+        },
+        bubbles: true,
+        composed: true
+      }));
+    }
+  }
+
+  private validateValue(value: number): { isValid: boolean; message?: string } {
+    if (isNaN(value)) {
+      return { isValid: false, message: 'Please enter a valid number' };
+    }
+    
+    if (value < this.minValue) {
+      return { isValid: false, message: `Value must be at least ${this.minValue}°` };
+    }
+    
+    if (value > this.maxValue) {
+      return { isValid: false, message: `Value must be at most ${this.maxValue}°` };
+    }
+    
+    return { isValid: true };
+  }
+
+  private handleKeyDown(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      this.closeValueEditor();
+    } else if (event.key === 'Enter') {
+      this.applyValueToSelection();
+    }
   }
 
   static get styles() {
@@ -332,9 +576,153 @@ export class ScheduleGridComponent extends LitElement {
         animation: pulse 2s infinite;
       }
 
+      .grid-cell.selected {
+        box-shadow: inset 0 0 0 2px var(--primary-color);
+        transform: scale(1.02);
+        z-index: 2;
+      }
+
+      .grid-cell.selected.current-time {
+        box-shadow: inset 0 0 0 3px var(--accent-color), inset 0 0 0 2px var(--primary-color);
+      }
+
       @keyframes pulse {
         0%, 100% { box-shadow: inset 0 0 0 3px var(--accent-color); }
         50% { box-shadow: inset 0 0 0 3px transparent; }
+      }
+
+      /* Value Editor Styles */
+      .value-editor-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .value-editor {
+        position: absolute;
+        background: var(--card-background-color);
+        border-radius: 8px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        min-width: 280px;
+        max-width: 90vw;
+        transform: translate(-50%, -50%);
+        border: 1px solid var(--divider-color);
+      }
+
+      .editor-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 16px;
+        border-bottom: 1px solid var(--divider-color);
+        font-weight: 500;
+      }
+
+      .close-btn {
+        background: none;
+        border: none;
+        font-size: 20px;
+        cursor: pointer;
+        color: var(--secondary-text-color);
+        padding: 0;
+        width: 24px;
+        height: 24px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 50%;
+      }
+
+      .close-btn:hover {
+        background: var(--secondary-background-color);
+        color: var(--primary-text-color);
+      }
+
+      .editor-content {
+        padding: 16px;
+      }
+
+      .value-input-group {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 12px;
+      }
+
+      .value-input {
+        flex: 1;
+        padding: 8px 12px;
+        border: 1px solid var(--divider-color);
+        border-radius: 4px;
+        background: var(--card-background-color);
+        color: var(--primary-text-color);
+        font-size: 16px;
+      }
+
+      .value-input:focus {
+        outline: none;
+        border-color: var(--primary-color);
+        box-shadow: 0 0 0 2px rgba(var(--primary-color-rgb), 0.2);
+      }
+
+      .unit {
+        color: var(--secondary-text-color);
+        font-weight: 500;
+      }
+
+      .range-info, .selection-info {
+        font-size: 0.9em;
+        color: var(--secondary-text-color);
+        margin-bottom: 8px;
+      }
+
+      .editor-actions {
+        display: flex;
+        gap: 8px;
+        justify-content: flex-end;
+        margin-top: 16px;
+      }
+
+      .cancel-btn, .apply-btn {
+        padding: 8px 16px;
+        border: 1px solid var(--divider-color);
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: all 0.2s ease;
+      }
+
+      .cancel-btn {
+        background: var(--card-background-color);
+        color: var(--secondary-text-color);
+      }
+
+      .cancel-btn:hover {
+        background: var(--secondary-background-color);
+        color: var(--primary-text-color);
+      }
+
+      .apply-btn {
+        background: var(--primary-color);
+        color: var(--text-primary-color);
+        border-color: var(--primary-color);
+      }
+
+      .apply-btn:hover:not(:disabled) {
+        background: var(--primary-color);
+        opacity: 0.9;
+      }
+
+      .apply-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
       }
 
       .legend {

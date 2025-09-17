@@ -128,14 +128,14 @@
     - _Requirements: 7.1, 7.3_
 
 - [ ] 9. Implement grid interface and interactions
-  - [-] 9.1 Create visual grid component
+  - [x] 9.1 Create visual grid component
     - Implement time/day grid rendering with configurable resolution
     - Add visual indicators for current schedule values
     - Create responsive design for different screen sizes
     - git add and git commit to allow for rollback
     - _Requirements: 1.1, 1.2_
 
-  - [ ] 9.2 Add grid interaction functionality
+  - [-] 9.2 Add grid interaction functionality
     - Implement click-and-drag selection for time slots
     - Add value editing with validation and range checking
     - Create visual feedback for user interactions

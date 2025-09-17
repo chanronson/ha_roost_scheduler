@@ -191,6 +191,8 @@ export class RoostSchedulerCard extends LitElement {
         .minValue=${this.getEntityMinValue()}
         .maxValue=${this.getEntityMaxValue()}
         @mode-changed=${this.handleModeChanged}
+        @schedule-changed=${this.handleScheduleChanged}
+        @cell-clicked=${this.handleCellClicked}
       ></schedule-grid>
     `;
   }
@@ -207,6 +209,35 @@ export class RoostSchedulerCard extends LitElement {
 
   private handleModeChanged(event: CustomEvent) {
     this.currentMode = event.detail.mode;
+  }
+
+  private async handleScheduleChanged(event: CustomEvent) {
+    const { mode, changes } = event.detail;
+    
+    try {
+      // Call the backend service to update schedules
+      await this.hass.callWS({
+        type: 'roost_scheduler/update_schedule',
+        entity_id: this.config.entity,
+        mode: mode,
+        changes: changes
+      });
+
+      // Reload schedule data to reflect changes
+      await this.loadScheduleData();
+    } catch (err) {
+      console.error('Failed to update schedule:', err);
+      // Show error to user (could be enhanced with a toast notification)
+      this.error = `Failed to update schedule: ${err}`;
+    }
+  }
+
+  private handleCellClicked(event: CustomEvent) {
+    const { day, time, currentValue } = event.detail;
+    console.log(`Cell clicked: ${day} ${time}, current value: ${currentValue}`);
+    
+    // This could be used for additional functionality like showing detailed info
+    // or quick actions for individual cells
   }
 
   static get styles() {

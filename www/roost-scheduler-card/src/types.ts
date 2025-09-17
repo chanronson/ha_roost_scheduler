@@ -80,3 +80,17 @@ export interface GridConfig {
   end_hour: number;
   days: string[];
 }
+
+export interface ScheduleChange {
+  day: string;
+  time: string;
+  value: number;
+}
+
+export interface CellClickEvent {
+  day: string;
+  time: string;
+  currentValue: number | null;
+  dayIndex: number;
+  timeIndex: number;
+}
