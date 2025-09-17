@@ -1,0 +1,43 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        
+      - name: Validate version consistency
+        run: |
+          # Extract version from tag
+          VERSION=${GITHUB_REF#refs/tags/v}
+          echo "Release version: $VERSION"
+          
+          # Check manifest version matches tag
+          MANIFEST_VERSION=$(grep '"version"' custom_components/roost_scheduler/manifest.json | cut -d'"' -f4)
+          if [ "$VERSION" != "$MANIFEST_VERSION" ]; then
+            echo "Version mismatch: tag=$VERSION, manifest=$MANIFEST_VERSION"
+            exit 1
+          fi
+          
+          # Check version.py matches
+          CODE_VERSION=$(grep 'VERSION = ' custom_components/roost_scheduler/version.py | cut -d'"' -f2)
+          if [ "$VERSION" != "$CODE_VERSION" ]; then
+            echo "Version mismatch: tag=$VERSION, code=$CODE_VERSION"
+            exit 1
+          fi
+          
+      - name: Create Release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false

@@ -17,9 +17,19 @@ from homeassistant.helpers.typing import ConfigType
 import homeassistant.helpers.config_validation as cv
 from homeassistant.components import websocket_api
 
-from .const import DOMAIN, SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW, SERVICE_MIGRATE_RESOLUTION, WEEKDAYS
+from .const import (
+    DOMAIN, 
+    SERVICE_APPLY_SLOT, 
+    SERVICE_APPLY_GRID_NOW, 
+    SERVICE_MIGRATE_RESOLUTION, 
+    WEEKDAYS,
+    MIN_HA_VERSION,
+    REQUIRED_DOMAINS,
+    OPTIONAL_DOMAINS
+)
 from .schedule_manager import ScheduleManager
 from .storage import StorageService
+from .version import VersionInfo, validate_manifest_version
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -48,6 +58,24 @@ SERVICE_MIGRATE_RESOLUTION_SCHEMA = vol.Schema({
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up the Roost Scheduler integration."""
     _LOGGER.debug("Setting up Roost Scheduler integration")
+    
+    # Validate version consistency
+    if not validate_manifest_version():
+        _LOGGER.error("Version validation failed - manifest and code versions don't match")
+        return False
+    
+    # Log version information
+    version_info = VersionInfo()
+    _LOGGER.info("Starting %s", version_info)
+    
+    # Validate Home Assistant version
+    if not _validate_ha_version(hass):
+        return False
+    
+    # Validate required dependencies
+    if not _validate_dependencies(hass):
+        return False
+    
     return True
 
 
@@ -394,3 +422,60 @@ async def _check_for_conflicts(schedule_manager, entity_id: str, mode: str, chan
         _LOGGER.error("Error checking for conflicts: %s", e)
     
     return conflicts
+
+
+def _validate_ha_version(hass: HomeAssistant) -> bool:
+    """Validate Home Assistant version compatibility."""
+    try:
+        from homeassistant.const import __version__ as ha_version
+        
+        # Simple version comparison for major.minor
+        ha_parts = [int(x) for x in ha_version.split(".")[:2]]
+        min_parts = [int(x) for x in MIN_HA_VERSION.split(".")[:2]]
+        
+        if ha_parts[0] > min_parts[0] or (ha_parts[0] == min_parts[0] and ha_parts[1] >= min_parts[1]):
+            _LOGGER.debug("Home Assistant version %s meets minimum requirement %s", ha_version, MIN_HA_VERSION)
+            return True
+        else:
+            _LOGGER.error(
+                "Home Assistant version %s is below minimum requirement %s", 
+                ha_version, 
+                MIN_HA_VERSION
+            )
+            return False
+            
+    except Exception as e:
+        _LOGGER.warning("Could not validate Home Assistant version: %s", e)
+        return True  # Allow setup to continue if version check fails
+
+
+def _validate_dependencies(hass: HomeAssistant) -> bool:
+    """Validate required and optional dependencies."""
+    missing_required = []
+    missing_optional = []
+    
+    # Check required domains
+    for domain in REQUIRED_DOMAINS:
+        if domain not in hass.config.components:
+            missing_required.append(domain)
+    
+    # Check optional domains (just log warnings)
+    for domain in OPTIONAL_DOMAINS:
+        if domain not in hass.config.components:
+            missing_optional.append(domain)
+    
+    if missing_required:
+        _LOGGER.error(
+            "Missing required dependencies: %s. Integration cannot start.", 
+            ", ".join(missing_required)
+        )
+        return False
+    
+    if missing_optional:
+        _LOGGER.warning(
+            "Missing optional dependencies: %s. Some features may not work.", 
+            ", ".join(missing_optional)
+        )
+    
+    _LOGGER.debug("All required dependencies are available")
+    return True

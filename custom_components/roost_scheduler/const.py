@@ -1,8 +1,27 @@
 """Constants for the Roost Scheduler integration."""
+from __future__ import annotations
 
 DOMAIN = "roost_scheduler"
 NAME = "Roost Scheduler"
 VERSION = "0.3.0"
+
+# HACS and repository information
+HACS_REPOSITORY = "user/roost-scheduler"
+ISSUE_URL = "https://github.com/user/roost-scheduler/issues"
+DOCUMENTATION_URL = "https://github.com/user/roost-scheduler"
+
+# Home Assistant version requirements
+MIN_HA_VERSION = "2023.1.0"
+RECOMMENDED_HA_VERSION = "2024.1.0"
+
+# Integration dependencies
+REQUIRED_DOMAINS = ["frontend", "websocket_api"]
+OPTIONAL_DOMAINS = ["device_tracker", "person", "zone"]
+
+# Card information
+CARD_NAME = "roost-scheduler-card"
+CARD_VERSION = "0.3.0"
+CARD_URL = "/roost-scheduler-card/roost-scheduler-card.js"
 
 # Default configuration values
 DEFAULT_RESOLUTION_MINUTES = 30

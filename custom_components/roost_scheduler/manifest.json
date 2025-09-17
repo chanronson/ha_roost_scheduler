@@ -8,5 +8,9 @@
   "codeowners": ["@user"],
   "requirements": [],
   "config_flow": true,
-  "iot_class": "local_polling"
+  "iot_class": "local_polling",
+  "integration_type": "device",
+  "after_dependencies": ["frontend"],
+  "loggers": ["custom_components.roost_scheduler"],
+  "quality_scale": "silver"
 }

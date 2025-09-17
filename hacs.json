@@ -1,0 +1,12 @@
+{
+  "name": "Roost Scheduler",
+  "hacs": "1.6.0",
+  "domains": ["climate"],
+  "iot_class": "Local Polling",
+  "homeassistant": "2023.1.0",
+  "render_readme": true,
+  "zip_release": false,
+  "filename": "roost_scheduler.zip",
+  "hide_default_branch": false,
+  "persistent_directory": "www/roost-scheduler-card"
+}
