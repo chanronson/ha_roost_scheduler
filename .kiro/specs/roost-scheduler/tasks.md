@@ -96,14 +96,14 @@
     - _Requirements: 4.3, 4.4, 4.5_
 
 - [-] 7. Implement Home Assistant service registration
-  - [-] 7.1 Register scheduler services with HA
+  - [x] 7.1 Register scheduler services with HA
     - Create scheduler.apply_slot service with parameter validation
     - Implement scheduler.apply_grid_now service for immediate application
     - Add proper service documentation and examples
     - git add and git commit to allow for rollback
     - _Requirements: 6.1, 6.2_
 
-  - [ ] 7.2 Add service parameter handling and validation
+  - [-] 7.2 Add service parameter handling and validation
     - Implement service call parameter parsing and validation
     - Add buffer override support in service calls
     - Create comprehensive error handling for invalid service parameters

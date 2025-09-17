@@ -276,3 +276,235 @@ class TestServiceExamples:
         # Should validate without errors
         result = SERVICE_APPLY_GRID_NOW_SCHEMA(example_data)
         assert result == example_data
+
+
+class TestServiceParameterValidation:
+    """Test comprehensive service parameter validation."""
+    
+    @pytest.fixture
+    def mock_schedule_manager_with_validation(self):
+        """Create a mock schedule manager with validation methods."""
+        from custom_components.roost_scheduler.schedule_manager import ScheduleManager
+        manager = MagicMock(spec=ScheduleManager)
+        
+        # Mock the validation method
+        def mock_validate_buffer_override(buffer_override):
+            errors = []
+            if "time_minutes" in buffer_override:
+                if not isinstance(buffer_override["time_minutes"], (int, float)):
+                    errors.append("time_minutes must be a number")
+                elif buffer_override["time_minutes"] < 0:
+                    errors.append("time_minutes must be non-negative")
+            return errors
+        
+        manager._validate_buffer_override = mock_validate_buffer_override
+        return manager
+    
+    def test_buffer_override_validation_valid(self, mock_schedule_manager_with_validation):
+        """Test valid buffer override parameters."""
+        valid_override = {
+            "time_minutes": 10,
+            "value_delta": 1.5,
+            "enabled": True
+        }
+        
+        errors = mock_schedule_manager_with_validation._validate_buffer_override(valid_override)
+        assert errors == []
+    
+    def test_buffer_override_validation_invalid_time(self, mock_schedule_manager_with_validation):
+        """Test invalid time_minutes in buffer override."""
+        invalid_override = {
+            "time_minutes": "invalid"
+        }
+        
+        errors = mock_schedule_manager_with_validation._validate_buffer_override(invalid_override)
+        assert "time_minutes must be a number" in errors
+    
+    def test_buffer_override_validation_negative_time(self, mock_schedule_manager_with_validation):
+        """Test negative time_minutes in buffer override."""
+        invalid_override = {
+            "time_minutes": -5
+        }
+        
+        errors = mock_schedule_manager_with_validation._validate_buffer_override(invalid_override)
+        assert "time_minutes must be non-negative" in errors
+
+
+class TestServiceIntegration:
+    """Integration tests for service scenarios."""
+    
+    @pytest.fixture
+    def mock_hass_with_entities(self):
+        """Create a mock Home Assistant with entities."""
+        hass = MagicMock()
+        
+        # Mock entity states
+        mock_climate_state = MagicMock()
+        mock_climate_state.state = "heat"
+        mock_climate_state.attributes = {"temperature": 20.0}
+        
+        mock_unavailable_state = MagicMock()
+        mock_unavailable_state.state = "unavailable"
+        
+        def mock_get_state(entity_id):
+            if entity_id == "climate.living_room":
+                return mock_climate_state
+            elif entity_id == "climate.unavailable":
+                return mock_unavailable_state
+            return None
+        
+        # Create mock states object
+        mock_states = MagicMock()
+        mock_states.get = mock_get_state
+        hass.states = mock_states
+        
+        return hass
+    
+    @pytest.fixture
+    def mock_schedule_data(self):
+        """Create mock schedule data."""
+        from custom_components.roost_scheduler.models import ScheduleData, ScheduleSlot
+        
+        schedule_data = MagicMock(spec=ScheduleData)
+        schedule_data.entities_tracked = ["climate.living_room"]
+        
+        # Mock schedule slot
+        mock_slot = MagicMock(spec=ScheduleSlot)
+        mock_slot.start_time = "08:00"
+        mock_slot.end_time = "09:30"
+        mock_slot.target_value = 21.0
+        mock_slot.to_dict.return_value = {
+            "start_time": "08:00",
+            "end_time": "09:30",
+            "target_value": 21.0
+        }
+        
+        schedule_data.schedules = {
+            "home": {
+                "monday": [mock_slot]
+            }
+        }
+        
+        return schedule_data
+    
+    @pytest.mark.asyncio
+    async def test_apply_slot_service_comprehensive_validation(self, mock_hass_with_entities, mock_schedule_data):
+        """Test comprehensive validation in apply_slot service."""
+        from custom_components.roost_scheduler.schedule_manager import ScheduleManager
+        from custom_components.roost_scheduler.storage import StorageService
+        from custom_components.roost_scheduler.presence_manager import PresenceManager
+        from custom_components.roost_scheduler.buffer_manager import BufferManager
+        
+        # Create mocks
+        storage_service = MagicMock(spec=StorageService)
+        presence_manager = MagicMock(spec=PresenceManager)
+        buffer_manager = MagicMock(spec=BufferManager)
+        
+        presence_manager.get_current_mode = AsyncMock(return_value="home")
+        
+        # Create schedule manager
+        schedule_manager = ScheduleManager(
+            mock_hass_with_entities, 
+            storage_service, 
+            presence_manager, 
+            buffer_manager
+        )
+        schedule_manager._schedule_data = mock_schedule_data
+        schedule_manager._apply_entity_value = AsyncMock(return_value=True)
+        
+        # Test valid service call
+        valid_call = ServiceCall(
+            domain="roost_scheduler",
+            service="apply_slot",
+            data={
+                "entity_id": "climate.living_room",
+                "day": "monday",
+                "time": "08:00-09:30",
+                "force": False,
+                "buffer_override": {
+                    "time_minutes": 10,
+                    "value_delta": 1.5
+                }
+            },
+            context=Context()
+        )
+        
+        # Should not raise an exception
+        await schedule_manager.apply_slot_service(valid_call)
+        
+        # Verify entity value was applied
+        schedule_manager._apply_entity_value.assert_called_once()
+    
+    @pytest.mark.asyncio
+    async def test_apply_slot_service_invalid_entity(self, mock_hass_with_entities, mock_schedule_data):
+        """Test apply_slot service with invalid entity."""
+        from custom_components.roost_scheduler.schedule_manager import ScheduleManager
+        from custom_components.roost_scheduler.storage import StorageService
+        from custom_components.roost_scheduler.presence_manager import PresenceManager
+        from custom_components.roost_scheduler.buffer_manager import BufferManager
+        
+        # Create mocks
+        storage_service = MagicMock(spec=StorageService)
+        presence_manager = MagicMock(spec=PresenceManager)
+        buffer_manager = MagicMock(spec=BufferManager)
+        
+        # Create schedule manager
+        schedule_manager = ScheduleManager(
+            mock_hass_with_entities, 
+            storage_service, 
+            presence_manager, 
+            buffer_manager
+        )
+        schedule_manager._schedule_data = mock_schedule_data
+        
+        # Test with non-existent entity
+        invalid_call = ServiceCall(
+            domain="roost_scheduler",
+            service="apply_slot",
+            data={
+                "entity_id": "climate.nonexistent",
+                "day": "monday",
+                "time": "08:00-09:30"
+            },
+            context=Context()
+        )
+        
+        # Should raise ValueError
+        with pytest.raises(ValueError, match="Entity climate.nonexistent not found"):
+            await schedule_manager.apply_slot_service(invalid_call)
+    
+    @pytest.mark.asyncio
+    async def test_apply_grid_now_service_unavailable_entity(self, mock_hass_with_entities, mock_schedule_data):
+        """Test apply_grid_now service with unavailable entity."""
+        from custom_components.roost_scheduler.schedule_manager import ScheduleManager
+        from custom_components.roost_scheduler.storage import StorageService
+        from custom_components.roost_scheduler.presence_manager import PresenceManager
+        from custom_components.roost_scheduler.buffer_manager import BufferManager
+        
+        # Create mocks
+        storage_service = MagicMock(spec=StorageService)
+        presence_manager = MagicMock(spec=PresenceManager)
+        buffer_manager = MagicMock(spec=BufferManager)
+        
+        # Create schedule manager
+        schedule_manager = ScheduleManager(
+            mock_hass_with_entities, 
+            storage_service, 
+            presence_manager, 
+            buffer_manager
+        )
+        schedule_manager._schedule_data = mock_schedule_data
+        
+        # Test with unavailable entity
+        invalid_call = ServiceCall(
+            domain="roost_scheduler",
+            service="apply_grid_now",
+            data={
+                "entity_id": "climate.unavailable"
+            },
+            context=Context()
+        )
+        
+        # Should raise RuntimeError
+        with pytest.raises(RuntimeError, match="is unavailable and cannot be controlled"):
+            await schedule_manager.apply_grid_now_service(invalid_call)

@@ -359,11 +359,12 @@ class ScheduleManager:
     
     async def apply_slot_service(self, call: ServiceCall) -> None:
         """
-        Handle the apply_slot service call.
+        Handle the apply_slot service call with comprehensive parameter validation.
         
-        Implements requirements 6.3, 6.4:
+        Implements requirements 6.3, 6.4, 6.5:
         - 6.3: Service call parameter parsing and validation
         - 6.4: Apply specific schedule slots with buffer override support
+        - 6.5: Comprehensive error handling for invalid service parameters
         """
         try:
             # Extract and validate parameters (Requirement 6.3)
@@ -373,17 +374,36 @@ class ScheduleManager:
             force = call.data.get("force", False)
             buffer_override = call.data.get("buffer_override", {})
             
+            # Comprehensive parameter validation (Requirement 6.5)
+            validation_errors = []
+            
             if not entity_id:
-                _LOGGER.error("apply_slot service: entity_id is required")
-                return
+                validation_errors.append("entity_id is required")
+            elif not isinstance(entity_id, str):
+                validation_errors.append("entity_id must be a string")
             
             if not day:
-                _LOGGER.error("apply_slot service: day is required")
-                return
+                validation_errors.append("day is required")
+            elif not isinstance(day, str):
+                validation_errors.append("day must be a string")
+            elif day.lower() not in [d.lower() for d in WEEKDAYS]:
+                validation_errors.append(f"day must be one of: {', '.join(WEEKDAYS)}")
             
             if not time_slot:
-                _LOGGER.error("apply_slot service: time is required")
-                return
+                validation_errors.append("time is required")
+            elif not isinstance(time_slot, str):
+                validation_errors.append("time must be a string")
+            
+            if not isinstance(force, bool):
+                validation_errors.append("force must be a boolean")
+            
+            if not isinstance(buffer_override, dict):
+                validation_errors.append("buffer_override must be a dictionary")
+            
+            if validation_errors:
+                error_msg = f"apply_slot service validation errors: {'; '.join(validation_errors)}"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
             
             _LOGGER.info("Apply slot service called: entity=%s, day=%s, time=%s, force=%s", 
                         entity_id, day, time_slot, force)
@@ -393,13 +413,22 @@ class ScheduleManager:
                 await self._load_schedule_data()
             
             if not self._schedule_data:
-                _LOGGER.error("No schedule data available for apply_slot service")
-                return
+                error_msg = "No schedule data available for apply_slot service"
+                _LOGGER.error(error_msg)
+                raise RuntimeError(error_msg)
+            
+            # Validate entity exists in Home Assistant
+            entity_state = self.hass.states.get(entity_id)
+            if not entity_state:
+                error_msg = f"Entity {entity_id} not found in Home Assistant"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
             
             # Validate entity is tracked
             if entity_id not in self._schedule_data.entities_tracked:
-                _LOGGER.error("Entity %s is not tracked in schedules", entity_id)
-                return
+                error_msg = f"Entity {entity_id} is not tracked in schedules"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
             
             # Parse and validate time slot format
             try:
@@ -409,12 +438,25 @@ class ScheduleManager:
                 
                 # Validate time format (HH:MM)
                 from datetime import time
-                time.fromisoformat(start_time)
-                time.fromisoformat(end_time)
+                start_time_obj = time.fromisoformat(start_time)
+                end_time_obj = time.fromisoformat(end_time)
+                
+                # Validate time range is logical
+                if start_time == end_time:
+                    raise ValueError("Start and end times cannot be the same")
                 
             except ValueError as e:
-                _LOGGER.error("Invalid time slot format: %s (error: %s)", time_slot, e)
-                return
+                error_msg = f"Invalid time slot format '{time_slot}': {e}"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Validate buffer override parameters (Requirement 6.4)
+            if buffer_override:
+                buffer_errors = self._validate_buffer_override(buffer_override)
+                if buffer_errors:
+                    error_msg = f"Invalid buffer override: {'; '.join(buffer_errors)}"
+                    _LOGGER.error(error_msg)
+                    raise ValueError(error_msg)
             
             # Get current mode and find the slot
             current_mode = await self.presence_manager.get_current_mode()
@@ -428,15 +470,22 @@ class ScheduleManager:
                     break
             
             if not target_slot:
-                _LOGGER.error("No slot found for %s on %s at %s in %s mode", 
-                             entity_id, day, time_slot, current_mode)
-                return
+                error_msg = f"No slot found for {entity_id} on {day} at {time_slot} in {current_mode} mode"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
             
             # Apply buffer override if provided (Requirement 6.4)
-            slot_config = target_slot.to_dict()
             if buffer_override:
-                slot_config["buffer_override"] = buffer_override
-                _LOGGER.debug("Applying buffer override: %s", buffer_override)
+                # Create a copy of the slot with buffer override
+                from .models import BufferConfig
+                try:
+                    buffer_config = BufferConfig.from_dict(buffer_override)
+                    target_slot.buffer_override = buffer_config
+                    _LOGGER.debug("Applied buffer override: %s", buffer_override)
+                except Exception as e:
+                    error_msg = f"Failed to apply buffer override: {e}"
+                    _LOGGER.error(error_msg)
+                    raise ValueError(error_msg)
             
             # Apply the slot value
             success = await self._apply_entity_value(entity_id, target_slot.target_value, target_slot, force)
@@ -446,29 +495,73 @@ class ScheduleManager:
                 _LOGGER.info("Successfully applied slot %s for %s: %.1f°C", 
                            time_slot, entity_id, target_slot.target_value)
             else:
-                _LOGGER.error("Failed to apply slot %s for %s", time_slot, entity_id)
+                error_msg = f"Failed to apply slot {time_slot} for {entity_id}"
+                _LOGGER.error(error_msg)
+                raise RuntimeError(error_msg)
                 
         except Exception as e:
             _LOGGER.error("Error in apply_slot service: %s", e)
+            raise
     
     async def apply_grid_now_service(self, call: ServiceCall) -> None:
         """
-        Handle the apply_grid_now service call.
+        Handle the apply_grid_now service call with comprehensive parameter validation.
         
-        Implements requirements 6.1, 6.2:
+        Implements requirements 6.1, 6.2, 6.5:
         - 6.1: Immediate full schedule application service
         - 6.2: Evaluate current time and presence, then apply appropriate schedule
+        - 6.5: Comprehensive error handling for invalid service parameters
         """
         try:
-            # Extract and validate parameters
+            # Extract and validate parameters (Requirement 6.5)
             entity_id = call.data.get("entity_id")
             force = call.data.get("force", False)
             
+            # Comprehensive parameter validation
+            validation_errors = []
+            
             if not entity_id:
-                _LOGGER.error("apply_grid_now service: entity_id is required")
-                return
+                validation_errors.append("entity_id is required")
+            elif not isinstance(entity_id, str):
+                validation_errors.append("entity_id must be a string")
+            
+            if not isinstance(force, bool):
+                validation_errors.append("force must be a boolean")
+            
+            if validation_errors:
+                error_msg = f"apply_grid_now service validation errors: {'; '.join(validation_errors)}"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
             
             _LOGGER.info("Apply grid now service called: entity=%s, force=%s", entity_id, force)
+            
+            # Validate entity exists in Home Assistant
+            entity_state = self.hass.states.get(entity_id)
+            if not entity_state:
+                error_msg = f"Entity {entity_id} not found in Home Assistant"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
+            
+            # Check if entity is available
+            if entity_state.state in ["unavailable", "unknown"]:
+                error_msg = f"Entity {entity_id} is {entity_state.state} and cannot be controlled"
+                _LOGGER.error(error_msg)
+                raise RuntimeError(error_msg)
+            
+            # Load schedule data if needed
+            if not self._schedule_data:
+                await self._load_schedule_data()
+            
+            if not self._schedule_data:
+                error_msg = "No schedule data available for apply_grid_now service"
+                _LOGGER.error(error_msg)
+                raise RuntimeError(error_msg)
+            
+            # Validate entity is tracked
+            if entity_id not in self._schedule_data.entities_tracked:
+                error_msg = f"Entity {entity_id} is not tracked in schedules"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
             
             # Apply current schedule (Requirement 6.2)
             success = await self.apply_schedule(entity_id, force)
@@ -476,10 +569,59 @@ class ScheduleManager:
             if success:
                 _LOGGER.info("Successfully applied current schedule for %s", entity_id)
             else:
-                _LOGGER.warning("Failed to apply current schedule for %s", entity_id)
+                error_msg = f"Failed to apply current schedule for {entity_id}"
+                _LOGGER.error(error_msg)
+                raise RuntimeError(error_msg)
                 
         except Exception as e:
             _LOGGER.error("Error in apply_grid_now service: %s", e)
+            raise
+    
+    def _validate_buffer_override(self, buffer_override: Dict[str, Any]) -> List[str]:
+        """
+        Validate buffer override parameters.
+        
+        Args:
+            buffer_override: Dictionary containing buffer override parameters
+            
+        Returns:
+            List of validation error messages (empty if valid)
+        """
+        errors = []
+        
+        # Validate time_minutes
+        if "time_minutes" in buffer_override:
+            time_minutes = buffer_override["time_minutes"]
+            if not isinstance(time_minutes, (int, float)):
+                errors.append("time_minutes must be a number")
+            elif time_minutes < 0:
+                errors.append("time_minutes must be non-negative")
+            elif time_minutes > 1440:  # 24 hours
+                errors.append("time_minutes cannot exceed 1440 (24 hours)")
+        
+        # Validate value_delta
+        if "value_delta" in buffer_override:
+            value_delta = buffer_override["value_delta"]
+            if not isinstance(value_delta, (int, float)):
+                errors.append("value_delta must be a number")
+            elif value_delta < 0:
+                errors.append("value_delta must be non-negative")
+            elif value_delta > 50:  # Reasonable upper limit
+                errors.append("value_delta cannot exceed 50 degrees")
+        
+        # Validate enabled
+        if "enabled" in buffer_override:
+            enabled = buffer_override["enabled"]
+            if not isinstance(enabled, bool):
+                errors.append("enabled must be a boolean")
+        
+        # Check for unknown parameters
+        valid_params = {"time_minutes", "value_delta", "enabled"}
+        unknown_params = set(buffer_override.keys()) - valid_params
+        if unknown_params:
+            errors.append(f"Unknown buffer override parameters: {', '.join(unknown_params)}")
+        
+        return errors
     
     def _time_in_slot(self, current_time: time, start_str: str, end_str: str) -> bool:
         """Check if current time falls within a schedule slot."""
