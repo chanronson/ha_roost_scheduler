@@ -95,7 +95,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 4.3, 4.4, 4.5_
 
-- [-] 7. Implement Home Assistant service registration
+- [x] 7. Implement Home Assistant service registration
   - [x] 7.1 Register scheduler services with HA
     - Create scheduler.apply_slot service with parameter validation
     - Implement scheduler.apply_grid_now service for immediate application
@@ -103,7 +103,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 6.1, 6.2_
 
-  - [-] 7.2 Add service parameter handling and validation
+  - [x] 7.2 Add service parameter handling and validation
     - Implement service call parameter parsing and validation
     - Add buffer override support in service calls
     - Create comprehensive error handling for invalid service parameters
@@ -111,15 +111,15 @@
     - git add and git commit to allow for rollback
     - _Requirements: 6.3, 6.4, 6.5_
 
-- [ ] 8. Create Lovelace card foundation
-  - [ ] 8.1 Set up card project structure and build system
+- [-] 8. Create Lovelace card foundation
+  - [x] 8.1 Set up card project structure and build system
     - Create JavaScript/TypeScript project structure for the card
     - Set up build system with bundling and minification
     - Implement basic card registration with Home Assistant
     - git add and git commit to allow for rollback
     - _Requirements: 7.1, 7.2_
 
-  - [ ] 8.2 Implement basic card rendering and configuration
+  - [-] 8.2 Implement basic card rendering and configuration
     - Create card configuration schema and validation
     - Implement basic card rendering with entity selection
     - Add card picker integration and metadata
