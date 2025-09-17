@@ -6,6 +6,7 @@ Provides grid-based scheduling interface with intelligent buffering and presence
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Any
 import voluptuous as vol
 
@@ -185,6 +186,8 @@ def _register_websocket_handlers(hass: HomeAssistant) -> None:
         vol.Required("entity_id"): cv.entity_id,
         vol.Required("mode"): vol.In(["home", "away"]),
         vol.Required("changes"): [dict],
+        vol.Optional("update_id"): str,
+        vol.Optional("conflict_resolution"): dict,
     })
     @websocket_api.async_response
     async def handle_update_schedule(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict) -> None:
@@ -193,6 +196,8 @@ def _register_websocket_handlers(hass: HomeAssistant) -> None:
             entity_id = msg["entity_id"]
             mode = msg["mode"]
             changes = msg["changes"]
+            update_id = msg.get("update_id")
+            conflict_resolution = msg.get("conflict_resolution", {"strategy": "server_wins"})
             
             # Find the schedule manager for this entity
             schedule_manager = None
@@ -205,24 +210,70 @@ def _register_websocket_handlers(hass: HomeAssistant) -> None:
                 connection.send_error(msg["id"], "no_schedule_manager", "No schedule manager found")
                 return
             
-            # Apply each change
-            for change in changes:
-                await schedule_manager.update_slot(
-                    entity_id=entity_id,
-                    mode=mode,
-                    day=change["day"],
-                    time=change["time"],
-                    target={"temperature": change["value"]}
-                )
+            # Check for conflicts if update_id is provided
+            conflicts = []
+            if update_id:
+                conflicts = await _check_for_conflicts(schedule_manager, entity_id, mode, changes, update_id)
             
-            # Broadcast the update to all connected clients
+            # Handle conflicts based on resolution strategy
+            if conflicts and conflict_resolution["strategy"] != "client_wins":
+                if conflict_resolution["strategy"] == "server_wins":
+                    # Don't apply changes, return current server state
+                    current_grid = await schedule_manager.get_schedule_grid(entity_id, mode)
+                    connection.send_result(msg["id"], {
+                        "success": False,
+                        "conflict": True,
+                        "server_state": current_grid,
+                        "conflicts": conflicts
+                    })
+                    return
+                elif conflict_resolution["strategy"] == "prompt_user":
+                    # Return conflict information for user resolution
+                    connection.send_result(msg["id"], {
+                        "success": False,
+                        "conflict": True,
+                        "conflicts": conflicts,
+                        "requires_resolution": True
+                    })
+                    return
+            
+            # Apply each change
+            successful_changes = []
+            failed_changes = []
+            
+            for change in changes:
+                try:
+                    success = await schedule_manager.update_slot(
+                        entity_id=entity_id,
+                        mode=mode,
+                        day=change["day"],
+                        time=change["time"],
+                        target={"temperature": change["value"]}
+                    )
+                    if success:
+                        successful_changes.append(change)
+                    else:
+                        failed_changes.append(change)
+                except Exception as e:
+                    _LOGGER.error("Failed to apply change %s: %s", change, e)
+                    failed_changes.append(change)
+            
+            # Broadcast the update to all connected clients (excluding the sender)
             hass.bus.async_fire(f"{DOMAIN}_schedule_updated", {
                 "entity_id": entity_id,
                 "mode": mode,
-                "changes": changes
+                "changes": successful_changes,
+                "update_id": update_id,
+                "timestamp": datetime.now().isoformat(),
+                "sender_connection_id": connection.id if hasattr(connection, 'id') else None
             })
             
-            connection.send_result(msg["id"], {"success": True})
+            connection.send_result(msg["id"], {
+                "success": len(failed_changes) == 0,
+                "successful_changes": successful_changes,
+                "failed_changes": failed_changes,
+                "update_id": update_id
+            })
             
         except Exception as e:
             _LOGGER.error("Error handling update_schedule: %s", e)
@@ -283,3 +334,41 @@ def _register_websocket_handlers(hass: HomeAssistant) -> None:
     hass.components.websocket_api.async_register_command(handle_subscribe_updates)
     
     _LOGGER.info("Registered Roost Scheduler WebSocket handlers")
+
+
+async def _check_for_conflicts(schedule_manager, entity_id: str, mode: str, changes: list, update_id: str) -> list:
+    """Check for conflicts between proposed changes and current server state."""
+    conflicts = []
+    
+    try:
+        # Get current schedule grid
+        current_grid = await schedule_manager.get_schedule_grid(entity_id, mode)
+        
+        # Check each proposed change against current state
+        for change in changes:
+            day = change["day"]
+            time = change["time"]
+            proposed_value = change["value"]
+            
+            # Find current value for this slot
+            current_value = None
+            if day in current_grid:
+                for slot in current_grid[day]:
+                    if slot.get("start_time") <= time <= slot.get("end_time", time):
+                        current_value = slot.get("target_value")
+                        break
+            
+            # Simple conflict detection: if values differ significantly
+            if current_value is not None and abs(current_value - proposed_value) > 0.1:
+                conflicts.append({
+                    "day": day,
+                    "time": time,
+                    "proposed_value": proposed_value,
+                    "current_value": current_value,
+                    "update_id": update_id
+                })
+    
+    except Exception as e:
+        _LOGGER.error("Error checking for conflicts: %s", e)
+    
+    return conflicts

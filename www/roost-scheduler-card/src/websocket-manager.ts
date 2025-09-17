@@ -43,6 +43,19 @@ export interface ConnectionStatus {
   error?: string;
 }
 
+export interface OptimisticUpdate {
+  id: string;
+  mode: string;
+  changes: Array<{ day: string; time: string; value: number }>;
+  timestamp: number;
+  applied: boolean;
+}
+
+export interface ConflictResolution {
+  strategy: 'server_wins' | 'client_wins' | 'merge' | 'prompt_user';
+  conflictData?: any;
+}
+
 export class WebSocketManager {
   private hass: HomeAssistant;
   private entityId: string;
@@ -54,6 +67,8 @@ export class WebSocketManager {
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000; // Start with 1 second
   private healthCheckInterval: number | null = null;
+  private pendingUpdates: Map<string, OptimisticUpdate> = new Map();
+  private updateTimeout = 5000; // 5 seconds timeout for updates
 
   constructor(hass: HomeAssistant, entityId: string) {
     this.hass = hass;
@@ -141,18 +156,73 @@ export class WebSocketManager {
   }
 
   /**
-   * Update schedule on backend
+   * Update schedule on backend with optimistic updates
    */
   async updateSchedule(mode: string, changes: Array<{ day: string; time: string; value: number }>): Promise<void> {
+    const updateId = this.generateUpdateId();
+    
+    // Create optimistic update
+    const optimisticUpdate: OptimisticUpdate = {
+      id: updateId,
+      mode: mode,
+      changes: changes,
+      timestamp: Date.now(),
+      applied: false
+    };
+    
+    // Store pending update
+    this.pendingUpdates.set(updateId, optimisticUpdate);
+    
+    // Apply optimistic update immediately
+    this.emitOptimisticUpdate(optimisticUpdate);
+    
+    try {
+      // Send update to backend
+      await this.hass.callWS({
+        type: 'roost_scheduler/update_schedule',
+        entity_id: this.entityId,
+        mode: mode,
+        changes: changes,
+        update_id: updateId, // Include update ID for conflict resolution
+      });
+      
+      // Mark as successfully applied
+      optimisticUpdate.applied = true;
+      
+      // Clean up after timeout
+      setTimeout(() => {
+        this.pendingUpdates.delete(updateId);
+      }, this.updateTimeout);
+      
+    } catch (error) {
+      console.error('Failed to update schedule:', error);
+      
+      // Rollback optimistic update
+      this.rollbackOptimisticUpdate(updateId);
+      this.pendingUpdates.delete(updateId);
+      
+      throw error;
+    }
+  }
+
+  /**
+   * Update schedule with conflict resolution
+   */
+  async updateScheduleWithConflictResolution(
+    mode: string, 
+    changes: Array<{ day: string; time: string; value: number }>,
+    resolution: ConflictResolution = { strategy: 'server_wins' }
+  ): Promise<void> {
     try {
       await this.hass.callWS({
         type: 'roost_scheduler/update_schedule',
         entity_id: this.entityId,
         mode: mode,
         changes: changes,
+        conflict_resolution: resolution,
       });
     } catch (error) {
-      console.error('Failed to update schedule:', error);
+      console.error('Failed to update schedule with conflict resolution:', error);
       throw error;
     }
   }
@@ -285,6 +355,124 @@ export class WebSocketManager {
         }
       });
     }
+  }
+
+  /**
+   * Generate unique update ID
+   */
+  private generateUpdateId(): string {
+    return `update_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Emit optimistic update event
+   */
+  private emitOptimisticUpdate(update: OptimisticUpdate): void {
+    this.emitEvent({
+      type: 'schedule_updated',
+      data: {
+        entity_id: this.entityId,
+        mode: update.mode,
+        day: '', // Will be filled by individual changes
+        time_slot: '', // Will be filled by individual changes
+        target_value: 0, // Will be filled by individual changes
+        changes: update.changes,
+        optimistic: true,
+        update_id: update.id
+      }
+    });
+  }
+
+  /**
+   * Rollback optimistic update
+   */
+  private rollbackOptimisticUpdate(updateId: string): void {
+    const update = this.pendingUpdates.get(updateId);
+    if (update) {
+      this.emitEvent({
+        type: 'schedule_updated',
+        data: {
+          entity_id: this.entityId,
+          mode: update.mode,
+          day: '',
+          time_slot: '',
+          target_value: 0,
+          changes: update.changes,
+          rollback: true,
+          update_id: updateId
+        }
+      });
+    }
+  }
+
+  /**
+   * Handle server confirmation of update
+   */
+  private handleUpdateConfirmation(updateId: string, serverData: any): void {
+    const pendingUpdate = this.pendingUpdates.get(updateId);
+    if (pendingUpdate) {
+      // Check for conflicts
+      const hasConflict = this.detectConflict(pendingUpdate, serverData);
+      
+      if (hasConflict) {
+        this.handleConflict(updateId, pendingUpdate, serverData);
+      } else {
+        // Update confirmed, clean up
+        this.pendingUpdates.delete(updateId);
+      }
+    }
+  }
+
+  /**
+   * Detect conflicts between optimistic update and server state
+   */
+  private detectConflict(optimisticUpdate: OptimisticUpdate, serverData: any): boolean {
+    // Simple conflict detection - check if server data differs from optimistic update
+    // In a real implementation, this would be more sophisticated
+    return serverData.timestamp > optimisticUpdate.timestamp;
+  }
+
+  /**
+   * Handle conflicts between optimistic updates and server state
+   */
+  private handleConflict(updateId: string, optimisticUpdate: OptimisticUpdate, serverData: any): void {
+    console.warn('Conflict detected for update:', updateId);
+    
+    // For now, server wins by default
+    this.rollbackOptimisticUpdate(updateId);
+    this.pendingUpdates.delete(updateId);
+    
+    // Emit conflict event for UI to handle
+    this.emitEvent({
+      type: 'schedule_updated',
+      data: {
+        entity_id: this.entityId,
+        mode: serverData.mode,
+        day: serverData.day,
+        time_slot: serverData.time_slot,
+        target_value: serverData.target_value,
+        changes: serverData.changes,
+        conflict: true,
+        conflict_data: {
+          optimistic: optimisticUpdate,
+          server: serverData
+        }
+      }
+    });
+  }
+
+  /**
+   * Get pending optimistic updates
+   */
+  getPendingUpdates(): OptimisticUpdate[] {
+    return Array.from(this.pendingUpdates.values());
+  }
+
+  /**
+   * Clear all pending updates (useful for reconnection)
+   */
+  clearPendingUpdates(): void {
+    this.pendingUpdates.clear();
   }
 
   /**

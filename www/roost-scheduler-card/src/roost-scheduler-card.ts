@@ -163,8 +163,23 @@ export class RoostSchedulerCard extends LitElement {
   private handleScheduleUpdate(event: WebSocketEvent): void {
     if (event.type === 'schedule_updated') {
       console.log('Received schedule update:', event.data);
-      // Reload schedule data to get the latest state
-      this.loadScheduleData();
+      
+      const data = event.data as any;
+      
+      // Handle different types of updates
+      if (data.optimistic) {
+        // Apply optimistic update to UI immediately
+        this.applyOptimisticUpdate(data);
+      } else if (data.rollback) {
+        // Rollback optimistic update
+        this.rollbackOptimisticUpdate(data.update_id);
+      } else if (data.conflict) {
+        // Handle conflict
+        this.handleScheduleConflict(data);
+      } else {
+        // Normal server update - reload data
+        this.loadScheduleData();
+      }
     }
   }
 
@@ -187,7 +202,91 @@ export class RoostSchedulerCard extends LitElement {
       if (this.error && this.error.includes('Connection error')) {
         this.error = null;
       }
+      
+      // Clear any pending optimistic updates on reconnection
+      if (this.wsManager) {
+        this.wsManager.clearPendingUpdates();
+      }
     }
+  }
+
+  private applyOptimisticUpdate(data: any): void {
+    // Apply changes to local schedule data immediately for responsive UI
+    const { mode, changes } = data;
+    
+    if (!this.scheduleData[mode]) {
+      this.scheduleData[mode] = {};
+    }
+    
+    changes.forEach((change: any) => {
+      const { day, time, value } = change;
+      
+      // Update local schedule data
+      if (!this.scheduleData[mode][day]) {
+        this.scheduleData[mode][day] = [];
+      }
+      
+      // Find and update existing slot or create new one
+      const slots = this.scheduleData[mode][day];
+      let updated = false;
+      
+      for (let i = 0; i < slots.length; i++) {
+        const slot = slots[i];
+        if (slot.start_time <= time && time <= slot.end_time) {
+          slot.target_value = value;
+          updated = true;
+          break;
+        }
+      }
+      
+      if (!updated) {
+        // Create new slot (simplified)
+        slots.push({
+          day: day,
+          start_time: time,
+          end_time: time,
+          target_value: value,
+          entity_domain: 'climate'
+        });
+      }
+    });
+    
+    // Trigger re-render
+    this.requestUpdate();
+  }
+
+  private rollbackOptimisticUpdate(updateId: string): void {
+    console.warn('Rolling back optimistic update:', updateId);
+    
+    // Show error message to user
+    this.error = 'Failed to save changes. Reverting to previous state.';
+    
+    // Reload data from server to get correct state
+    this.loadScheduleData();
+    
+    // Clear error after a delay
+    setTimeout(() => {
+      if (this.error === 'Failed to save changes. Reverting to previous state.') {
+        this.error = null;
+      }
+    }, 3000);
+  }
+
+  private handleScheduleConflict(data: any): void {
+    console.warn('Schedule conflict detected:', data);
+    
+    // Show conflict message to user
+    this.error = 'Conflict detected: Your changes conflict with recent updates. Showing latest server state.';
+    
+    // Reload data to show server state
+    this.loadScheduleData();
+    
+    // Clear error after a delay
+    setTimeout(() => {
+      if (this.error?.includes('Conflict detected')) {
+        this.error = null;
+      }
+    }, 5000);
   }
 
   protected render() {
@@ -286,17 +385,16 @@ export class RoostSchedulerCard extends LitElement {
     }
     
     try {
-      // Use WebSocket manager to update schedules
+      // Use WebSocket manager with optimistic updates
       await this.wsManager.updateSchedule(mode, changes);
       
-      // The real-time update will be received via WebSocket event
-      // No need to manually reload data here
+      // Optimistic update is handled automatically by WebSocket manager
+      // Server confirmation or rollback will be handled via WebSocket events
     } catch (err) {
       console.error('Failed to update schedule:', err);
-      this.error = `Failed to update schedule: ${err}`;
       
-      // Reload data as fallback in case of error
-      await this.loadScheduleData();
+      // Error handling is done in rollbackOptimisticUpdate
+      // No need to show additional error here as it's already handled
     }
   }
 

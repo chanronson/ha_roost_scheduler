@@ -144,7 +144,7 @@
     - _Requirements: 1.2, 1.3, 1.4_
 
 - [-] 10. Implement real-time synchronization
-  - [-] 10.1 Add WebSocket communication for live updates
+  - [x] 10.1 Add WebSocket communication for live updates
     - Implement WebSocket connection management
     - Create real-time state synchronization between card and backend
     - Add connection status indicators and error handling
