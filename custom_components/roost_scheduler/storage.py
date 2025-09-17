@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 
 from .const import STORAGE_KEY, STORAGE_VERSION
 from .models import ScheduleData
+from .migration import MigrationManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,15 +41,28 @@ class StorageService:
         self._backup_dir = Path(hass.config.config_dir) / "roost_scheduler_backups"
         self._nightly_backup_enabled = True
         self._nightly_backup_time = "02:00"  # Default backup time
+        self._migration_manager = MigrationManager(hass, entry_id)
     
     async def load_schedules(self) -> Optional[ScheduleData]:
-        """Load schedule data from storage."""
+        """Load schedule data from storage with migration support."""
         try:
             data = await self._store.async_load()
             if data:
                 try:
-                    # Validate and parse the loaded data
-                    schedule_data = ScheduleData.from_dict(data)
+                    # Perform migration if needed
+                    migrated_data = await self._migration_manager.migrate_if_needed(data)
+                    
+                    # Validate migrated data
+                    if not await self._migration_manager.validate_migrated_data(migrated_data):
+                        raise CorruptedDataError("Data validation failed after migration")
+                    
+                    # Save migrated data if it was changed
+                    if migrated_data != data:
+                        await self._store.async_save(migrated_data)
+                        _LOGGER.info("Saved migrated data for entry %s", self.entry_id)
+                    
+                    # Parse the loaded/migrated data
+                    schedule_data = ScheduleData.from_dict(migrated_data)
                     self._schedule_data = schedule_data
                     _LOGGER.debug("Loaded and validated schedule data for entry %s", self.entry_id)
                     return schedule_data
@@ -128,7 +142,7 @@ class StorageService:
             raise StorageError(f"Failed to export backup: {e}")
     
     async def import_backup(self, file_path: str) -> bool:
-        """Import schedule data from a backup file."""
+        """Import schedule data from a backup file with migration support."""
         try:
             if not os.path.exists(file_path):
                 _LOGGER.error("Backup file not found: %s", file_path)
@@ -137,10 +151,18 @@ class StorageService:
             # Read and parse the backup file
             try:
                 with open(file_path, 'r', encoding='utf-8') as f:
-                    json_data = f.read()
+                    raw_data = json.load(f)
                 
-                # Use ScheduleData's from_json method for consistent parsing
-                schedule_data = ScheduleData.from_json(json_data)
+                # Perform migration if needed
+                migrated_data = await self._migration_manager.migrate_if_needed(raw_data)
+                
+                # Validate migrated data
+                if not await self._migration_manager.validate_migrated_data(migrated_data):
+                    _LOGGER.error("Backup data validation failed after migration")
+                    return False
+                
+                # Convert to ScheduleData object
+                schedule_data = ScheduleData.from_dict(migrated_data)
                 
             except (OSError, json.JSONDecodeError) as e:
                 _LOGGER.error("Error reading backup file %s: %s", file_path, e)
@@ -149,11 +171,8 @@ class StorageService:
                 _LOGGER.error("Invalid backup data format in %s: %s", file_path, e)
                 return False
             
-            # Perform version migration if needed
-            migrated_data = await self._migrate_schedule_data(schedule_data)
-            
             # Save imported data
-            await self.save_schedules(migrated_data)
+            await self.save_schedules(schedule_data)
             
             _LOGGER.info("Successfully imported backup from %s", file_path)
             return True

@@ -30,6 +30,7 @@ from .const import (
 from .schedule_manager import ScheduleManager
 from .storage import StorageService
 from .version import VersionInfo, validate_manifest_version
+from .migration import UninstallManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -126,6 +127,23 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id)
     
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove a config entry and handle data preservation."""
+    _LOGGER.info("Removing Roost Scheduler config entry: %s", entry.entry_id)
+    
+    # Check if user wants to preserve data (could be from options or default to True)
+    preserve_data = entry.options.get("preserve_data_on_uninstall", True)
+    
+    # Handle uninstall with data preservation options
+    uninstall_manager = UninstallManager(hass)
+    try:
+        uninstall_info = await uninstall_manager.prepare_uninstall(preserve_data)
+        _LOGGER.info("Uninstall preparation completed: %s", uninstall_info)
+    except Exception as e:
+        _LOGGER.error("Error during uninstall preparation: %s", e)
+        # Continue with removal even if uninstall prep fails
 
 
 async def _register_services(hass: HomeAssistant, schedule_manager: ScheduleManager) -> None:
