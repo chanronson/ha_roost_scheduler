@@ -50,14 +50,37 @@ def is_version_supported(version: str) -> bool:
         min_parts = [int(x) for x in MIN_SUPPORTED_VERSION.split(".")]
         version_parts = [int(x) for x in version.split(".")]
         
-        # Check if version is >= minimum supported
-        for i in range(min(len(version_parts), len(min_parts))):
-            if version_parts[i] > min_parts[i]:
-                return True
-            elif version_parts[i] < min_parts[i]:
-                return False
+        # Check if version is >= minimum supported AND <= current version
+        # Don't support future versions (downgrade prevention)
+        version_too_old = False
+        version_too_new = False
         
-        return len(version_parts) >= len(min_parts)
+        # Check if version is too old
+        for i in range(min(len(version_parts), len(min_parts))):
+            if version_parts[i] < min_parts[i]:
+                version_too_old = True
+                break
+            elif version_parts[i] > min_parts[i]:
+                break
+        
+        # Check if version is too new (future version)
+        for i in range(min(len(version_parts), len(current_parts))):
+            if version_parts[i] > current_parts[i]:
+                version_too_new = True
+                break
+            elif version_parts[i] < current_parts[i]:
+                break
+        
+        if version_too_old:
+            _LOGGER.warning("Version %s is below minimum supported version %s", version, MIN_SUPPORTED_VERSION)
+            return False
+        
+        if version_too_new:
+            _LOGGER.warning("Version %s is newer than current version %s (downgrade not supported)", version, VERSION)
+            return False
+        
+        return True
+        
     except (ValueError, IndexError):
         _LOGGER.warning("Invalid version format: %s", version)
         return False

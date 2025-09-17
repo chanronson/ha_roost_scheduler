@@ -97,6 +97,12 @@ class MigrationManager:
                 _LOGGER.warning("No migration function found for version %s", target_version)
         
         _LOGGER.info("Migration completed successfully to version %s", VERSION)
+        
+        # Validate migrated data
+        if not await self.validate_migrated_data(migrated_data):
+            _LOGGER.error("Migration validation failed")
+            raise ValueError("Migration validation failed - data integrity check failed")
+        
         return migrated_data
     
     async def _create_migration_backup(self, data: dict[str, Any], from_version: str) -> None:

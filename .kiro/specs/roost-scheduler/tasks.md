@@ -175,7 +175,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 1.3, 1.5_
 
-- [ ] 12. Implement HACS integration and packaging
+- [-] 12. Implement HACS integration and packaging
   - [x] 12.1 Set up HACS repository structure
     - Create proper HACS manifest and repository structure
     - Add version management and release automation

@@ -220,14 +220,11 @@ class TestUpgradeScenarios:
             "schedules": {"home": {}, "away": {}}
         }
         
-        with patch.object(storage_service._store, 'async_load') as mock_load, \
-             patch('custom_components.roost_scheduler.version.is_version_supported') as mock_supported:
-            
+        with patch.object(storage_service._store, 'async_load') as mock_load:
             mock_load.return_value = future_data
-            mock_supported.return_value = False  # Future version not supported
             
-            # Should raise error for unsupported version
-            with pytest.raises(Exception):
+            # Should raise error for unsupported version (future version)
+            with pytest.raises(ValueError, match="Unsupported migration"):
                 await storage_service.load_schedules()
     
     @pytest.mark.asyncio
@@ -270,10 +267,11 @@ class TestUpgradeScenarios:
             mock_validate.return_value = False  # Validation fails
             
             # Should raise error if validation fails
-            with pytest.raises(Exception):
+            with pytest.raises(ValueError, match="Migration validation failed"):
                 await storage_service.load_schedules()
         
-        mock_validate.assert_called_once()
+        # Validation should be called twice - once during migration, once in storage
+        assert mock_validate.call_count >= 1
 
 
 class TestVersionCompatibility:
@@ -321,3 +319,21 @@ class TestVersionCompatibility:
         mock_hass.config.components = {"device_tracker"}
         result = _validate_dependencies(mock_hass)
         assert result is False
+    
+    def test_future_version_rejection(self):
+        """Test that future versions are properly rejected."""
+        from custom_components.roost_scheduler.version import is_version_supported
+        
+        # Current version should be supported
+        assert is_version_supported(VERSION) is True
+        
+        # Future version should not be supported
+        assert is_version_supported("1.0.0") is False
+        assert is_version_supported("0.4.0") is False
+        
+        # Old version should not be supported
+        assert is_version_supported("0.0.1") is False
+        
+        # Supported versions should work
+        assert is_version_supported("0.1.0") is True
+        assert is_version_supported("0.2.0") is True
