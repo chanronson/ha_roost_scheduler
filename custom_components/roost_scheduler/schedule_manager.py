@@ -595,6 +595,54 @@ class ScheduleManager:
             _LOGGER.error("Error in apply_grid_now service: %s", e)
             raise
     
+    async def migrate_resolution_service(self, call: ServiceCall) -> None:
+        """
+        Handle the migrate_resolution service call for changing time resolution.
+        
+        Implements requirement 1.4: Schedule resolution migration with preview and confirmation.
+        """
+        try:
+            # Extract and validate parameters
+            new_resolution = call.data.get("resolution_minutes")
+            preview_only = call.data.get("preview", True)
+            
+            # Parameter validation
+            validation_errors = []
+            
+            if new_resolution is None:
+                validation_errors.append("resolution_minutes is required")
+            elif not isinstance(new_resolution, int):
+                validation_errors.append("resolution_minutes must be an integer")
+            elif new_resolution not in [15, 30, 60]:
+                validation_errors.append("resolution_minutes must be 15, 30, or 60")
+            
+            if not isinstance(preview_only, bool):
+                validation_errors.append("preview must be a boolean")
+            
+            if validation_errors:
+                error_msg = f"migrate_resolution service validation errors: {'; '.join(validation_errors)}"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
+            
+            _LOGGER.info("Migrate resolution service called: resolution=%d, preview=%s", 
+                        new_resolution, preview_only)
+            
+            # Perform migration
+            result = await self.migrate_resolution(new_resolution, preview_only)
+            
+            # Emit event with results
+            from .const import DOMAIN
+            self.hass.bus.async_fire(f"{DOMAIN}_migration_result", {
+                "service": "migrate_resolution",
+                "result": result
+            })
+            
+            _LOGGER.info("Resolution migration service completed: %s", result["status"])
+            
+        except Exception as e:
+            _LOGGER.error("Error in migrate_resolution service: %s", e)
+            raise
+    
     def _validate_buffer_override(self, buffer_override: Dict[str, Any]) -> List[str]:
         """
         Validate buffer override parameters.
@@ -671,6 +719,265 @@ class ScheduleManager:
             _LOGGER.error("Failed to load schedule data: %s", e)
             self._schedule_data = None
     
+    async def migrate_resolution(self, new_resolution_minutes: int, preview: bool = True) -> Dict[str, Any]:
+        """
+        Migrate schedule resolution with preview and user confirmation.
+        
+        Implements requirement 1.4: Handle changing time resolution with preview system.
+        
+        Args:
+            new_resolution_minutes: New time resolution (15, 30, or 60 minutes)
+            preview: If True, return preview without applying changes
+            
+        Returns:
+            Dictionary containing migration preview or results
+        """
+        if not self._schedule_data:
+            await self._load_schedule_data()
+        
+        if not self._schedule_data:
+            raise ValueError("No schedule data available for migration")
+        
+        # Validate new resolution
+        valid_resolutions = [15, 30, 60]
+        if new_resolution_minutes not in valid_resolutions:
+            raise ValueError(f"Resolution must be one of {valid_resolutions}, got {new_resolution_minutes}")
+        
+        current_resolution = self._schedule_data.ui.get("resolution_minutes", 30)
+        
+        if current_resolution == new_resolution_minutes:
+            return {
+                "status": "no_change",
+                "message": f"Resolution is already {new_resolution_minutes} minutes",
+                "current_resolution": current_resolution,
+                "new_resolution": new_resolution_minutes
+            }
+        
+        _LOGGER.info("Starting resolution migration from %d to %d minutes (preview=%s)", 
+                    current_resolution, new_resolution_minutes, preview)
+        
+        # Create migration preview
+        migration_preview = {
+            "status": "preview" if preview else "applied",
+            "current_resolution": current_resolution,
+            "new_resolution": new_resolution_minutes,
+            "changes": {},
+            "warnings": [],
+            "total_slots_before": 0,
+            "total_slots_after": 0
+        }
+        
+        # Process each mode and day
+        migrated_schedules = {}
+        for mode, mode_schedules in self._schedule_data.schedules.items():
+            migrated_schedules[mode] = {}
+            migration_preview["changes"][mode] = {}
+            
+            for day, slots in mode_schedules.items():
+                migration_preview["total_slots_before"] += len(slots)
+                
+                # Migrate slots for this day
+                migrated_slots, day_changes = self._migrate_day_slots(
+                    slots, current_resolution, new_resolution_minutes
+                )
+                
+                migrated_schedules[mode][day] = migrated_slots
+                migration_preview["changes"][mode][day] = day_changes
+                migration_preview["total_slots_after"] += len(migrated_slots)
+                
+                # Check for potential issues
+                warnings = self._validate_migrated_slots(migrated_slots, day, mode)
+                migration_preview["warnings"].extend(warnings)
+        
+        # Add summary statistics
+        migration_preview["summary"] = {
+            "slots_changed": migration_preview["total_slots_after"] - migration_preview["total_slots_before"],
+            "resolution_factor": new_resolution_minutes / current_resolution,
+            "data_loss_risk": current_resolution < new_resolution_minutes,
+            "precision_gain": current_resolution > new_resolution_minutes
+        }
+        
+        # If not preview, apply the migration
+        if not preview:
+            try:
+                # Update schedule data
+                self._schedule_data.schedules = migrated_schedules
+                self._schedule_data.ui["resolution_minutes"] = new_resolution_minutes
+                self._schedule_data.metadata["last_modified"] = datetime.now().isoformat()
+                self._schedule_data.metadata["last_migration"] = {
+                    "from_resolution": current_resolution,
+                    "to_resolution": new_resolution_minutes,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Save updated data
+                await self.storage_service.save_schedules(self._schedule_data.to_dict())
+                
+                # Emit event for real-time updates
+                from .const import DOMAIN
+                self.hass.bus.async_fire(f"{DOMAIN}_resolution_migrated", {
+                    "from_resolution": current_resolution,
+                    "to_resolution": new_resolution_minutes,
+                    "total_changes": migration_preview["total_slots_after"] - migration_preview["total_slots_before"]
+                })
+                
+                _LOGGER.info("Resolution migration completed: %d -> %d minutes", 
+                           current_resolution, new_resolution_minutes)
+                
+            except Exception as e:
+                _LOGGER.error("Error applying resolution migration: %s", e)
+                migration_preview["status"] = "error"
+                migration_preview["error"] = str(e)
+        
+        return migration_preview
+    
+    def _migrate_day_slots(self, slots: List[ScheduleSlot], current_res: int, new_res: int) -> tuple[List[ScheduleSlot], Dict[str, Any]]:
+        """
+        Migrate slots for a single day to new resolution.
+        
+        Args:
+            slots: List of current schedule slots
+            current_res: Current resolution in minutes
+            new_res: New resolution in minutes
+            
+        Returns:
+            Tuple of (migrated_slots, change_summary)
+        """
+        if not slots:
+            return [], {"original_count": 0, "new_count": 0, "changes": []}
+        
+        migrated_slots = []
+        changes = []
+        
+        # Sort slots by start time
+        sorted_slots = sorted(slots, key=lambda s: s.start_time)
+        
+        for slot in sorted_slots:
+            # Convert times to minutes since midnight
+            start_minutes = self._time_to_minutes(slot.start_time)
+            end_minutes = self._time_to_minutes(slot.end_time)
+            
+            # Align to new resolution boundaries
+            new_start_minutes = self._align_to_resolution(start_minutes, new_res)
+            new_end_minutes = self._align_to_resolution(end_minutes, new_res, align_up=True)
+            
+            # Ensure minimum slot duration (at least one resolution unit)
+            if new_end_minutes <= new_start_minutes:
+                new_end_minutes = new_start_minutes + new_res
+            
+            # Convert back to time strings
+            new_start_time = self._minutes_to_time(new_start_minutes)
+            new_end_time = self._minutes_to_time(new_end_minutes)
+            
+            # Create migrated slot
+            migrated_slot = ScheduleSlot(
+                day=slot.day,
+                start_time=new_start_time,
+                end_time=new_end_time,
+                target_value=slot.target_value,
+                entity_domain=slot.entity_domain,
+                buffer_override=slot.buffer_override
+            )
+            
+            # Track changes
+            if (slot.start_time != new_start_time or slot.end_time != new_end_time):
+                changes.append({
+                    "original": {"start": slot.start_time, "end": slot.end_time},
+                    "migrated": {"start": new_start_time, "end": new_end_time},
+                    "target_value": slot.target_value
+                })
+            
+            migrated_slots.append(migrated_slot)
+        
+        # Merge overlapping slots with same target value
+        merged_slots = self._merge_overlapping_slots(migrated_slots)
+        
+        return merged_slots, {
+            "original_count": len(slots),
+            "new_count": len(merged_slots),
+            "changes": changes,
+            "merged": len(migrated_slots) != len(merged_slots)
+        }
+    
+    def _align_to_resolution(self, minutes: int, resolution: int, align_up: bool = False) -> int:
+        """Align time in minutes to resolution boundary."""
+        if align_up:
+            return ((minutes + resolution - 1) // resolution) * resolution
+        else:
+            return (minutes // resolution) * resolution
+    
+    def _time_to_minutes(self, time_str: str) -> int:
+        """Convert time string to minutes since midnight."""
+        try:
+            hour, minute = map(int, time_str.split(':'))
+            return hour * 60 + minute
+        except (ValueError, AttributeError):
+            raise ValueError(f"Invalid time format: {time_str}")
+    
+    def _minutes_to_time(self, minutes: int) -> str:
+        """Convert minutes since midnight to time string."""
+        # Handle special case for exactly 1440 minutes (24:00) - convert to 23:59
+        if minutes >= 24 * 60:
+            return "23:59"
+        
+        hour = minutes // 60
+        minute = minutes % 60
+        
+        return f"{hour:02d}:{minute:02d}"
+    
+    def _merge_overlapping_slots(self, slots: List[ScheduleSlot]) -> List[ScheduleSlot]:
+        """Merge overlapping slots with the same target value."""
+        if not slots:
+            return []
+        
+        # Sort by start time
+        sorted_slots = sorted(slots, key=lambda s: s.start_time)
+        merged = [sorted_slots[0]]
+        
+        for current in sorted_slots[1:]:
+            last_merged = merged[-1]
+            
+            # Check if slots can be merged (adjacent or overlapping with same target)
+            if (self._time_to_minutes(current.start_time) <= self._time_to_minutes(last_merged.end_time) and
+                abs(current.target_value - last_merged.target_value) < 0.1 and
+                current.entity_domain == last_merged.entity_domain):
+                
+                # Extend the last merged slot
+                if self._time_to_minutes(current.end_time) > self._time_to_minutes(last_merged.end_time):
+                    last_merged.end_time = current.end_time
+            else:
+                merged.append(current)
+        
+        return merged
+    
+    def _validate_migrated_slots(self, slots: List[ScheduleSlot], day: str, mode: str) -> List[str]:
+        """Validate migrated slots and return warnings."""
+        warnings = []
+        
+        if not slots:
+            warnings.append(f"No slots after migration for {mode} mode on {day}")
+            return warnings
+        
+        # Check for overlaps
+        sorted_slots = sorted(slots, key=lambda s: s.start_time)
+        for i in range(len(sorted_slots) - 1):
+            if sorted_slots[i].overlaps_with(sorted_slots[i + 1]):
+                warnings.append(
+                    f"Overlapping slots after migration in {mode}/{day}: "
+                    f"{sorted_slots[i].start_time}-{sorted_slots[i].end_time} and "
+                    f"{sorted_slots[i + 1].start_time}-{sorted_slots[i + 1].end_time}"
+                )
+        
+        # Check for gaps
+        for i in range(len(sorted_slots) - 1):
+            if sorted_slots[i].end_time != sorted_slots[i + 1].start_time:
+                warnings.append(
+                    f"Gap after migration in {mode}/{day}: "
+                    f"{sorted_slots[i].end_time} to {sorted_slots[i + 1].start_time}"
+                )
+        
+        return warnings
+
     def _calculate_slot_duration(self, start_time: str, end_time: str) -> int:
         """Calculate the duration of a schedule slot in minutes."""
         try:
@@ -1057,3 +1364,310 @@ class ScheduleManager:
                 validation_info["reason"] = f"Cannot parse current value: {entity_state.state}"
         
         return validation_info
+    
+    async def migrate_resolution(self, new_resolution_minutes: int, preview: bool = True) -> Dict[str, Any]:
+        """
+        Migrate schedule resolution with preview and user confirmation.
+        
+        Implements requirement 1.4: Handle changing time resolution with preview system.
+        
+        Args:
+            new_resolution_minutes: New time resolution (15, 30, or 60 minutes)
+            preview: If True, return preview without applying changes
+            
+        Returns:
+            Dictionary containing migration preview or results
+        """
+        if not self._schedule_data:
+            await self._load_schedule_data()
+        
+        if not self._schedule_data:
+            raise ValueError("No schedule data available for migration")
+        
+        # Validate new resolution
+        valid_resolutions = [15, 30, 60]
+        if new_resolution_minutes not in valid_resolutions:
+            raise ValueError(f"Resolution must be one of {valid_resolutions}, got {new_resolution_minutes}")
+        
+        current_resolution = self._schedule_data.ui.get("resolution_minutes", 30)
+        
+        if current_resolution == new_resolution_minutes:
+            return {
+                "status": "no_change",
+                "message": f"Resolution is already {new_resolution_minutes} minutes",
+                "current_resolution": current_resolution,
+                "new_resolution": new_resolution_minutes
+            }
+        
+        _LOGGER.info("Starting resolution migration from %d to %d minutes (preview=%s)", 
+                    current_resolution, new_resolution_minutes, preview)
+        
+        # Create migration preview
+        migration_preview = {
+            "status": "preview" if preview else "applied",
+            "current_resolution": current_resolution,
+            "new_resolution": new_resolution_minutes,
+            "changes": {},
+            "warnings": [],
+            "total_slots_before": 0,
+            "total_slots_after": 0
+        }
+        
+        # Process each mode and day
+        migrated_schedules = {}
+        for mode, mode_schedules in self._schedule_data.schedules.items():
+            migrated_schedules[mode] = {}
+            migration_preview["changes"][mode] = {}
+            
+            for day, slots in mode_schedules.items():
+                migration_preview["total_slots_before"] += len(slots)
+                
+                # Migrate slots for this day
+                migrated_slots, day_changes = self._migrate_day_slots(
+                    slots, current_resolution, new_resolution_minutes
+                )
+                
+                migrated_schedules[mode][day] = migrated_slots
+                migration_preview["changes"][mode][day] = day_changes
+                migration_preview["total_slots_after"] += len(migrated_slots)
+                
+                # Check for potential issues
+                warnings = self._validate_migrated_slots(migrated_slots, day, mode)
+                migration_preview["warnings"].extend(warnings)
+        
+        # Add summary statistics
+        migration_preview["summary"] = {
+            "slots_changed": migration_preview["total_slots_after"] - migration_preview["total_slots_before"],
+            "resolution_factor": new_resolution_minutes / current_resolution,
+            "data_loss_risk": current_resolution < new_resolution_minutes,
+            "precision_gain": current_resolution > new_resolution_minutes
+        }
+        
+        # If not preview, apply the migration
+        if not preview:
+            try:
+                # Update schedule data
+                self._schedule_data.schedules = migrated_schedules
+                self._schedule_data.ui["resolution_minutes"] = new_resolution_minutes
+                self._schedule_data.metadata["last_modified"] = datetime.now().isoformat()
+                self._schedule_data.metadata["last_migration"] = {
+                    "from_resolution": current_resolution,
+                    "to_resolution": new_resolution_minutes,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                # Save updated data
+                await self.storage_service.save_schedules(self._schedule_data.to_dict())
+                
+                # Emit event for real-time updates
+                from .const import DOMAIN
+                self.hass.bus.async_fire(f"{DOMAIN}_resolution_migrated", {
+                    "from_resolution": current_resolution,
+                    "to_resolution": new_resolution_minutes,
+                    "total_changes": migration_preview["total_slots_after"] - migration_preview["total_slots_before"]
+                })
+                
+                _LOGGER.info("Resolution migration completed: %d -> %d minutes", 
+                           current_resolution, new_resolution_minutes)
+                
+            except Exception as e:
+                _LOGGER.error("Error applying resolution migration: %s", e)
+                migration_preview["status"] = "error"
+                migration_preview["error"] = str(e)
+        
+        return migration_preview
+    
+    def _migrate_day_slots(self, slots: List[ScheduleSlot], current_res: int, new_res: int) -> tuple[List[ScheduleSlot], Dict[str, Any]]:
+        """
+        Migrate slots for a single day to new resolution.
+        
+        Args:
+            slots: List of current schedule slots
+            current_res: Current resolution in minutes
+            new_res: New resolution in minutes
+            
+        Returns:
+            Tuple of (migrated_slots, change_summary)
+        """
+        if not slots:
+            return [], {"original_count": 0, "new_count": 0, "changes": []}
+        
+        migrated_slots = []
+        changes = []
+        
+        # Sort slots by start time
+        sorted_slots = sorted(slots, key=lambda s: s.start_time)
+        
+        for slot in sorted_slots:
+            # Convert times to minutes since midnight
+            start_minutes = self._time_to_minutes(slot.start_time)
+            end_minutes = self._time_to_minutes(slot.end_time)
+            
+            # Align to new resolution boundaries
+            new_start_minutes = self._align_to_resolution(start_minutes, new_res)
+            new_end_minutes = self._align_to_resolution(end_minutes, new_res, align_up=True)
+            
+            # Ensure minimum slot duration (at least one resolution unit)
+            if new_end_minutes <= new_start_minutes:
+                new_end_minutes = new_start_minutes + new_res
+            
+            # Convert back to time strings
+            new_start_time = self._minutes_to_time(new_start_minutes)
+            new_end_time = self._minutes_to_time(new_end_minutes)
+            
+            # Create migrated slot
+            migrated_slot = ScheduleSlot(
+                day=slot.day,
+                start_time=new_start_time,
+                end_time=new_end_time,
+                target_value=slot.target_value,
+                entity_domain=slot.entity_domain,
+                buffer_override=slot.buffer_override
+            )
+            
+            # Track changes
+            if (slot.start_time != new_start_time or slot.end_time != new_end_time):
+                changes.append({
+                    "original": {"start": slot.start_time, "end": slot.end_time},
+                    "migrated": {"start": new_start_time, "end": new_end_time},
+                    "target_value": slot.target_value
+                })
+            
+            migrated_slots.append(migrated_slot)
+        
+        # Merge overlapping slots with same target value
+        merged_slots = self._merge_overlapping_slots(migrated_slots)
+        
+        return merged_slots, {
+            "original_count": len(slots),
+            "new_count": len(merged_slots),
+            "changes": changes,
+            "merged": len(migrated_slots) != len(merged_slots)
+        }
+    
+    def _align_to_resolution(self, minutes: int, resolution: int, align_up: bool = False) -> int:
+        """Align time in minutes to resolution boundary."""
+        if align_up:
+            return ((minutes + resolution - 1) // resolution) * resolution
+        else:
+            return (minutes // resolution) * resolution
+    
+    def _time_to_minutes(self, time_str: str) -> int:
+        """Convert time string to minutes since midnight."""
+        try:
+            hour, minute = map(int, time_str.split(':'))
+            return hour * 60 + minute
+        except (ValueError, AttributeError):
+            raise ValueError(f"Invalid time format: {time_str}")
+    
+    def _minutes_to_time(self, minutes: int) -> str:
+        """Convert minutes since midnight to time string."""
+        # Handle special case for exactly 1440 minutes (24:00) - convert to 23:59
+        if minutes >= 24 * 60:
+            return "23:59"
+        
+        hour = minutes // 60
+        minute = minutes % 60
+        
+        return f"{hour:02d}:{minute:02d}"
+    
+    def _merge_overlapping_slots(self, slots: List[ScheduleSlot]) -> List[ScheduleSlot]:
+        """Merge overlapping slots with the same target value."""
+        if not slots:
+            return []
+        
+        # Sort by start time
+        sorted_slots = sorted(slots, key=lambda s: s.start_time)
+        merged = [sorted_slots[0]]
+        
+        for current in sorted_slots[1:]:
+            last_merged = merged[-1]
+            
+            # Check if slots can be merged (adjacent or overlapping with same target)
+            if (self._time_to_minutes(current.start_time) <= self._time_to_minutes(last_merged.end_time) and
+                abs(current.target_value - last_merged.target_value) < 0.1 and
+                current.entity_domain == last_merged.entity_domain):
+                
+                # Extend the last merged slot
+                if self._time_to_minutes(current.end_time) > self._time_to_minutes(last_merged.end_time):
+                    last_merged.end_time = current.end_time
+            else:
+                merged.append(current)
+        
+        return merged
+    
+    def _validate_migrated_slots(self, slots: List[ScheduleSlot], day: str, mode: str) -> List[str]:
+        """Validate migrated slots and return warnings."""
+        warnings = []
+        
+        if not slots:
+            warnings.append(f"No slots after migration for {mode} mode on {day}")
+            return warnings
+        
+        # Check for overlaps
+        sorted_slots = sorted(slots, key=lambda s: s.start_time)
+        for i in range(len(sorted_slots) - 1):
+            if sorted_slots[i].overlaps_with(sorted_slots[i + 1]):
+                warnings.append(
+                    f"Overlapping slots after migration in {mode}/{day}: "
+                    f"{sorted_slots[i].start_time}-{sorted_slots[i].end_time} and "
+                    f"{sorted_slots[i + 1].start_time}-{sorted_slots[i + 1].end_time}"
+                )
+        
+        # Check for gaps
+        for i in range(len(sorted_slots) - 1):
+            if sorted_slots[i].end_time != sorted_slots[i + 1].start_time:
+                warnings.append(
+                    f"Gap after migration in {mode}/{day}: "
+                    f"{sorted_slots[i].end_time} to {sorted_slots[i + 1].start_time}"
+                )
+        
+        return warnings
+
+    async def migrate_resolution_service(self, call: ServiceCall) -> None:
+        """
+        Handle the migrate_resolution service call for changing time resolution.
+        
+        Implements requirement 1.4: Schedule resolution migration with preview and confirmation.
+        """
+        try:
+            # Extract and validate parameters
+            new_resolution = call.data.get("resolution_minutes")
+            preview_only = call.data.get("preview", True)
+            
+            # Parameter validation
+            validation_errors = []
+            
+            if new_resolution is None:
+                validation_errors.append("resolution_minutes is required")
+            elif not isinstance(new_resolution, int):
+                validation_errors.append("resolution_minutes must be an integer")
+            elif new_resolution not in [15, 30, 60]:
+                validation_errors.append("resolution_minutes must be 15, 30, or 60")
+            
+            if not isinstance(preview_only, bool):
+                validation_errors.append("preview must be a boolean")
+            
+            if validation_errors:
+                error_msg = f"migrate_resolution service validation errors: {'; '.join(validation_errors)}"
+                _LOGGER.error(error_msg)
+                raise ValueError(error_msg)
+            
+            _LOGGER.info("Migrate resolution service called: resolution=%d, preview=%s", 
+                        new_resolution, preview_only)
+            
+            # Perform migration
+            result = await self.migrate_resolution(new_resolution, preview_only)
+            
+            # Emit event with results
+            from .const import DOMAIN
+            self.hass.bus.async_fire(f"{DOMAIN}_migration_result", {
+                "service": "migrate_resolution",
+                "result": result
+            })
+            
+            _LOGGER.info("Resolution migration service completed: %s", result["status"])
+            
+        except Exception as e:
+            _LOGGER.error("Error in migrate_resolution service: %s", e)
+            raise

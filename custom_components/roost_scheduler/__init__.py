@@ -17,7 +17,7 @@ from homeassistant.helpers.typing import ConfigType
 import homeassistant.helpers.config_validation as cv
 from homeassistant.components import websocket_api
 
-from .const import DOMAIN, SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW, WEEKDAYS
+from .const import DOMAIN, SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW, SERVICE_MIGRATE_RESOLUTION, WEEKDAYS
 from .schedule_manager import ScheduleManager
 from .storage import StorageService
 
@@ -37,6 +37,11 @@ SERVICE_APPLY_SLOT_SCHEMA = vol.Schema({
 SERVICE_APPLY_GRID_NOW_SCHEMA = vol.Schema({
     vol.Required("entity_id"): cv.entity_id,
     vol.Optional("force", default=False): cv.boolean,
+})
+
+SERVICE_MIGRATE_RESOLUTION_SCHEMA = vol.Schema({
+    vol.Required("resolution_minutes"): vol.In([15, 30, 60]),
+    vol.Optional("preview", default=True): cv.boolean,
 })
 
 
@@ -118,6 +123,16 @@ async def _register_services(hass: HomeAssistant, schedule_manager: ScheduleMana
             _LOGGER.error("Error in apply_grid_now service: %s", e)
             raise
     
+    async def migrate_resolution_service(call: ServiceCall) -> None:
+        """Handle migrate_resolution service call with validation."""
+        try:
+            # The schema validation is handled by Home Assistant when we register with schema
+            await schedule_manager.migrate_resolution_service(call)
+            
+        except Exception as e:
+            _LOGGER.error("Error in migrate_resolution service: %s", e)
+            raise
+    
     # Register services with schemas
     hass.services.async_register(
         DOMAIN, 
@@ -133,8 +148,15 @@ async def _register_services(hass: HomeAssistant, schedule_manager: ScheduleMana
         schema=SERVICE_APPLY_GRID_NOW_SCHEMA
     )
     
-    _LOGGER.info("Registered Roost Scheduler services: %s, %s", 
-                SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW)
+    hass.services.async_register(
+        DOMAIN, 
+        SERVICE_MIGRATE_RESOLUTION, 
+        migrate_resolution_service,
+        schema=SERVICE_MIGRATE_RESOLUTION_SCHEMA
+    )
+    
+    _LOGGER.info("Registered Roost Scheduler services: %s, %s, %s", 
+                SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW, SERVICE_MIGRATE_RESOLUTION)
 
 
 def _register_websocket_handlers(hass: HomeAssistant) -> None:

@@ -61,3 +61,28 @@ apply_grid_now:
       default: false
       selector:
         boolean:
+
+migrate_resolution:
+  name: Migrate Schedule Resolution
+  description: Change the time resolution of schedules with preview and confirmation
+  fields:
+    resolution_minutes:
+      name: New Resolution
+      description: New time resolution in minutes
+      required: true
+      selector:
+        select:
+          options:
+            - label: "15 minutes"
+              value: 15
+            - label: "30 minutes"
+              value: 30
+            - label: "60 minutes"
+              value: 60
+    preview:
+      name: Preview Only
+      description: If true, only show preview without applying changes
+      required: false
+      default: true
+      selector:
+        boolean:

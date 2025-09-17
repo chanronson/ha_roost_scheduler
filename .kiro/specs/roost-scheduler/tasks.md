@@ -143,7 +143,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 1.2, 1.3, 1.4_
 
-- [-] 10. Implement real-time synchronization
+- [x] 10. Implement real-time synchronization
   - [x] 10.1 Add WebSocket communication for live updates
     - Implement WebSocket connection management
     - Create real-time state synchronization between card and backend
@@ -151,7 +151,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 7.3, 7.4_
 
-  - [ ] 10.2 Add schedule change propagation
+  - [x] 10.2 Add schedule change propagation
     - Implement immediate schedule updates from card to backend
     - Create conflict resolution for concurrent edits
     - Add optimistic UI updates with rollback on errors
@@ -159,8 +159,8 @@
     - git add and git commit to allow for rollback
     - _Requirements: 7.3, 7.4, 7.5_
 
-- [ ] 11. Implement resolution migration and advanced features
-  - [ ] 11.1 Add schedule resolution migration
+- [-] 11. Implement resolution migration and advanced features
+  - [-] 11.1 Add schedule resolution migration
     - Create migration logic for changing time resolution
     - Implement preview system for resolution changes
     - Add user confirmation before applying migrations

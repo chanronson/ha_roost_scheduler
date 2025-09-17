@@ -18,6 +18,7 @@ STORAGE_VERSION = 1
 # Service names
 SERVICE_APPLY_SLOT = "apply_slot"
 SERVICE_APPLY_GRID_NOW = "apply_grid_now"
+SERVICE_MIGRATE_RESOLUTION = "migrate_resolution"
 
 # Presence modes
 MODE_HOME = "home"
