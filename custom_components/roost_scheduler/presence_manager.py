@@ -14,6 +14,10 @@ from .const import MODE_HOME, MODE_AWAY, DEFAULT_PRESENCE_TIMEOUT_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
+# Debug logging flags
+DEBUG_PRESENCE_EVALUATION = False
+DEBUG_ENTITY_STATES = False
+
 
 class PresenceManager:
     """Manages presence detection and Home/Away mode determination."""
@@ -37,21 +41,34 @@ class PresenceManager:
     
     async def get_current_mode(self) -> str:
         """Get the current presence mode (home or away)."""
+        if DEBUG_PRESENCE_EVALUATION:
+            _LOGGER.debug("Evaluating presence mode")
+            
         # Check for override entities first
         force_home_state = self.hass.states.get(self._override_entities["force_home"])
         force_away_state = self.hass.states.get(self._override_entities["force_away"])
         
+        if DEBUG_ENTITY_STATES:
+            _LOGGER.debug("Override states - force_home: %s, force_away: %s", 
+                         force_home_state.state if force_home_state else "None",
+                         force_away_state.state if force_away_state else "None")
+        
         if force_home_state and force_home_state.state == "on":
-            _LOGGER.debug("Force home override active")
+            if DEBUG_PRESENCE_EVALUATION:
+                _LOGGER.debug("Force home override active")
             return MODE_HOME
         
         if force_away_state and force_away_state.state == "on":
-            _LOGGER.debug("Force away override active")
+            if DEBUG_PRESENCE_EVALUATION:
+                _LOGGER.debug("Force away override active")
             return MODE_AWAY
         
         # Evaluate presence entities
         is_home = await self.evaluate_presence_entities()
         mode = MODE_HOME if is_home else MODE_AWAY
+        
+        if DEBUG_PRESENCE_EVALUATION:
+            _LOGGER.debug("Presence evaluation result: is_home=%s, mode=%s", is_home, mode)
         
         # Update current mode and notify callbacks if changed
         if mode != self._current_mode:
@@ -64,7 +81,8 @@ class PresenceManager:
             self.hass.bus.async_fire(f"{DOMAIN}_presence_changed", {
                 "old_mode": old_mode,
                 "new_mode": mode,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                "trigger": "presence_evaluation"
             })
             
             # Notify callbacks

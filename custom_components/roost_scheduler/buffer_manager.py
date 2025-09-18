@@ -12,6 +12,10 @@ from .const import DEFAULT_BUFFER_TIME_MINUTES, DEFAULT_BUFFER_VALUE_DELTA
 
 _LOGGER = logging.getLogger(__name__)
 
+# Debug logging flags
+DEBUG_BUFFER_LOGIC = False
+DEBUG_MANUAL_CHANGES = False
+
 
 class BufferManager:
     """Manages intelligent buffering to avoid conflicts with manual changes."""
@@ -43,31 +47,41 @@ class BufferManager:
             slot_config: Configuration for the current slot (may contain buffer overrides)
             force_apply: If True, bypass all buffer logic (Requirement 2.5)
         """
+        if DEBUG_BUFFER_LOGIC:
+            _LOGGER.debug("Evaluating buffer suppression for %s (target: %.1f, force: %s)", 
+                         entity_id, target_value, force_apply)
+        
         # Requirement 2.5: Force-apply bypass mechanism
         if force_apply:
-            _LOGGER.debug("Force apply enabled for %s, bypassing all buffer logic", entity_id)
+            if DEBUG_BUFFER_LOGIC:
+                _LOGGER.debug("Force apply enabled for %s, bypassing all buffer logic", entity_id)
             return False
         
         entity_state = self._entity_states.get(entity_id)
         if not entity_state:
             # No state tracked yet, don't suppress (Requirement 2.3)
-            _LOGGER.debug("No entity state for %s, allowing change to %.1f", entity_id, target_value)
+            if DEBUG_BUFFER_LOGIC:
+                _LOGGER.debug("No entity state for %s, allowing change to %.1f", entity_id, target_value)
             return False
         
         buffer_config = self.get_buffer_config(slot_config)
         if not buffer_config.enabled:
-            _LOGGER.debug("Buffer disabled for %s, allowing change to %.1f", entity_id, target_value)
+            if DEBUG_BUFFER_LOGIC:
+                _LOGGER.debug("Buffer disabled for %s, allowing change to %.1f", entity_id, target_value)
             return False
         
         current_value = entity_state.current_value
         
+        if DEBUG_BUFFER_LOGIC:
+            _LOGGER.debug("Buffer evaluation for %s: current=%.1f, target=%.1f, tolerance=%.1f, time_buffer=%dm", 
+                         entity_id, current_value, target_value, buffer_config.value_delta, buffer_config.time_minutes)
+        
         # Requirement 2.1: Check if current value is within tolerance of target
         tolerance_delta = abs(current_value - target_value)
         if tolerance_delta <= buffer_config.value_delta:
-            _LOGGER.debug(
-                "Suppressing change for %s: current %.1f within tolerance %.1f of target %.1f (delta: %.1f)", 
-                entity_id, current_value, buffer_config.value_delta, target_value, tolerance_delta
-            )
+            if DEBUG_BUFFER_LOGIC:
+                _LOGGER.debug("Suppressing change for %s: current %.1f within tolerance %.1f of target %.1f (delta: %.1f)", 
+                             entity_id, current_value, buffer_config.value_delta, target_value, tolerance_delta)
             return True
         
         # Requirement 2.2: Check if there was a recent manual change within buffer time

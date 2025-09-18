@@ -31,6 +31,7 @@ from .schedule_manager import ScheduleManager
 from .storage import StorageService
 from .version import VersionInfo, validate_manifest_version
 from .migration import UninstallManager
+from .logging_config import LoggingManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -84,38 +85,76 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Roost Scheduler from a config entry."""
     _LOGGER.info("Setting up Roost Scheduler config entry: %s", entry.entry_id)
     
-    # Initialize storage service
-    storage_service = StorageService(hass, entry.entry_id)
-    
-    # Initialize presence manager and buffer manager
-    from .presence_manager import PresenceManager
-    from .buffer_manager import BufferManager
-    
-    presence_manager = PresenceManager(hass, storage_service)
-    buffer_manager = BufferManager(hass, storage_service)
-    
-    # Initialize schedule manager with all dependencies
-    schedule_manager = ScheduleManager(hass, storage_service, presence_manager, buffer_manager)
-    
-    # Store services in hass.data
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = {
-        "storage_service": storage_service,
-        "schedule_manager": schedule_manager,
-        "presence_manager": presence_manager,
-        "buffer_manager": buffer_manager,
-    }
-    
-    # Load existing schedules
-    await storage_service.load_schedules()
-    
-    # Register services
-    await _register_services(hass, schedule_manager)
-    
-    # Register WebSocket API handlers
-    _register_websocket_handlers(hass)
-    
-    return True
+    try:
+        # Initialize logging manager
+        logging_manager = LoggingManager(hass)
+        await logging_manager.async_setup()
+        
+        # Initialize storage service
+        storage_service = StorageService(hass, entry.entry_id)
+        
+        # Initialize presence manager and buffer manager
+        from .presence_manager import PresenceManager
+        from .buffer_manager import BufferManager
+        
+        presence_manager = PresenceManager(hass, storage_service)
+        buffer_manager = BufferManager(hass, storage_service)
+        
+        # Initialize schedule manager with all dependencies
+        schedule_manager = ScheduleManager(hass, storage_service, presence_manager, buffer_manager)
+        
+        # Store services in hass.data
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "storage_service": storage_service,
+            "schedule_manager": schedule_manager,
+            "presence_manager": presence_manager,
+            "buffer_manager": buffer_manager,
+            "logging_manager": logging_manager,
+        }
+        
+        # Load existing schedules with error handling
+        try:
+            await storage_service.load_schedules()
+            _LOGGER.info("Successfully loaded schedule data for entry %s", entry.entry_id)
+        except Exception as e:
+            _LOGGER.error("Failed to load schedules for entry %s: %s", entry.entry_id, e)
+            # Continue setup even if schedule loading fails - will use defaults
+        
+        # Register services with error handling
+        try:
+            await _register_services(hass, schedule_manager)
+            _LOGGER.info("Successfully registered services for entry %s", entry.entry_id)
+        except Exception as e:
+            _LOGGER.error("Failed to register services for entry %s: %s", entry.entry_id, e)
+            # This is more critical - cleanup and fail
+            await _cleanup_entry_data(hass, entry)
+            return False
+        
+        # Register WebSocket API handlers with error handling
+        try:
+            _register_websocket_handlers(hass)
+            _LOGGER.info("Successfully registered WebSocket handlers for entry %s", entry.entry_id)
+        except Exception as e:
+            _LOGGER.warning("Failed to register WebSocket handlers for entry %s: %s", entry.entry_id, e)
+            # WebSocket failures are not critical - continue without real-time updates
+        
+        # Final setup validation
+        try:
+            await _validate_setup(hass, entry)
+            _LOGGER.info("Setup validation completed successfully for entry %s", entry.entry_id)
+        except Exception as e:
+            _LOGGER.warning("Setup validation failed for entry %s: %s", entry.entry_id, e)
+            # Validation failures are warnings, not critical errors
+        
+        _LOGGER.info("Roost Scheduler setup completed successfully for entry %s", entry.entry_id)
+        return True
+        
+    except Exception as e:
+        _LOGGER.error("Critical error during setup for entry %s: %s", entry.entry_id, e, exc_info=True)
+        # Cleanup any partial setup
+        await _cleanup_entry_data(hass, entry)
+        return False
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -497,3 +536,64 @@ def _validate_dependencies(hass: HomeAssistant) -> bool:
     
     _LOGGER.debug("All required dependencies are available")
     return True
+
+
+async def _cleanup_entry_data(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Clean up entry data on setup failure."""
+    try:
+        if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+            entry_data = hass.data[DOMAIN][entry.entry_id]
+            
+            # Cleanup logging manager
+            if "logging_manager" in entry_data:
+                try:
+                    await entry_data["logging_manager"]._cleanup_file_logging()
+                except Exception as e:
+                    _LOGGER.debug("Error cleaning up logging manager: %s", e)
+            
+            # Remove entry data
+            hass.data[DOMAIN].pop(entry.entry_id, None)
+            
+            # Remove domain data if no entries left
+            if not hass.data[DOMAIN]:
+                hass.data.pop(DOMAIN, None)
+                
+        _LOGGER.debug("Cleaned up entry data for %s", entry.entry_id)
+        
+    except Exception as e:
+        _LOGGER.error("Error during cleanup for entry %s: %s", entry.entry_id, e)
+
+
+async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Validate that setup completed successfully."""
+    entry_data = hass.data[DOMAIN][entry.entry_id]
+    
+    # Check that all required components are present
+    required_components = ["storage_service", "schedule_manager", "presence_manager", "buffer_manager"]
+    for component in required_components:
+        if component not in entry_data:
+            raise ValueError(f"Missing required component: {component}")
+    
+    # Test basic functionality
+    schedule_manager = entry_data["schedule_manager"]
+    
+    # Verify schedule manager can load data
+    try:
+        await schedule_manager._load_schedule_data()
+    except Exception as e:
+        _LOGGER.warning("Schedule manager data loading test failed: %s", e)
+    
+    # Verify presence manager can evaluate mode
+    try:
+        presence_manager = entry_data["presence_manager"]
+        current_mode = await presence_manager.get_current_mode()
+        if current_mode not in [MODE_HOME, MODE_AWAY]:
+            raise ValueError(f"Invalid presence mode: {current_mode}")
+    except Exception as e:
+        _LOGGER.warning("Presence manager test failed: %s", e)
+    
+    # Check service registration
+    if not hass.services.has_service(DOMAIN, SERVICE_APPLY_SLOT):
+        raise ValueError("Services not properly registered")
+    
+    _LOGGER.debug("Setup validation completed for entry %s", entry.entry_id)

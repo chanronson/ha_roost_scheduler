@@ -175,7 +175,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 1.3, 1.5_
 
-- [-] 12. Implement HACS integration and packaging
+- [x] 12. Implement HACS integration and packaging
   - [x] 12.1 Set up HACS repository structure
     - Create proper HACS manifest and repository structure
     - Add version management and release automation
@@ -183,7 +183,7 @@
     - git add and git commit to allow for rollback
     - _Requirements: 8.1, 8.2_
 
-  - [-] 12.2 Add migration and upgrade handling
+  - [x] 12.2 Add migration and upgrade handling
     - Create version migration system for breaking changes
     - Implement data preservation during updates
     - Add uninstall cleanup with data preservation options
@@ -191,15 +191,15 @@
     - git add and git commit to allow for rollback
     - _Requirements: 8.3, 8.4, 8.5_
 
-- [ ] 13. Integration testing and final wiring
-  - [ ] 13.1 Create comprehensive integration tests
+- [-] 13. Integration testing and final wiring
+  - [x] 13.1 Create comprehensive integration tests
     - Write end-to-end tests covering complete user workflows
     - Test presence-based mode switching with real scenarios
     - Validate buffer system behavior under various conditions
     - git add and git commit to allow for rollback
     - _Requirements: All requirements validation_
 
-  - [ ] 13.2 Final system integration and polish
+  - [-] 13.2 Final system integration and polish
     - Integrate all components with proper error handling
     - Add comprehensive logging and debugging support
     - Create user documentation and setup guides

@@ -16,6 +16,11 @@ from .const import MODE_HOME, MODE_AWAY, WEEKDAYS
 
 _LOGGER = logging.getLogger(__name__)
 
+# Debug logging flags - can be enabled via configuration or environment
+DEBUG_SCHEDULE_EVALUATION = False
+DEBUG_BUFFER_DECISIONS = False
+DEBUG_SERVICE_CALLS = False
+
 
 class ScheduleManager:
     """Manages schedule evaluation and execution."""
@@ -101,16 +106,30 @@ class ScheduleManager:
         Returns:
             True if schedule was applied successfully, False otherwise
         """
+        start_time = datetime.now()
+        
         try:
+            if DEBUG_SCHEDULE_EVALUATION:
+                _LOGGER.debug("Starting schedule evaluation for %s (force=%s)", entity_id, force)
+            
             # Get current presence mode
             current_mode = await self.presence_manager.get_current_mode()
+            
+            if DEBUG_SCHEDULE_EVALUATION:
+                _LOGGER.debug("Current presence mode: %s", current_mode)
             
             # Evaluate current schedule slot
             current_slot = await self.evaluate_current_slot(entity_id, current_mode)
             
             if not current_slot:
-                _LOGGER.debug("No active schedule slot for %s in %s mode", entity_id, current_mode)
+                if DEBUG_SCHEDULE_EVALUATION:
+                    _LOGGER.debug("No active schedule slot for %s in %s mode at %s", 
+                                 entity_id, current_mode, datetime.now().strftime("%H:%M"))
                 return False
+            
+            if DEBUG_SCHEDULE_EVALUATION:
+                _LOGGER.debug("Found active slot for %s: %s-%s (target: %.1f)", 
+                             entity_id, current_slot.start_time, current_slot.end_time, current_slot.target_value)
             
             # Get current entity state
             entity_state = self.hass.states.get(entity_id)
@@ -130,6 +149,11 @@ class ScheduleManager:
             try:
                 current_value = float(entity_state.attributes.get("temperature", entity_state.state))
                 self.buffer_manager.update_current_value(entity_id, current_value)
+                
+                if DEBUG_BUFFER_DECISIONS:
+                    _LOGGER.debug("Current value for %s: %.1f, target: %.1f", 
+                                 entity_id, current_value, target_value)
+                    
             except (ValueError, TypeError):
                 _LOGGER.warning("Could not parse current value for %s: %s", 
                                entity_id, entity_state.state)
@@ -141,24 +165,48 @@ class ScheduleManager:
                 entity_id, target_value, slot_config, force
             )
             
+            if DEBUG_BUFFER_DECISIONS:
+                _LOGGER.debug("Buffer decision for %s: suppress=%s (force=%s)", 
+                             entity_id, should_suppress, force)
+            
             if should_suppress and not force:
-                _LOGGER.debug("Schedule application suppressed by buffer logic for %s", entity_id)
+                _LOGGER.debug("Schedule application suppressed by buffer logic for %s (current: %.1f, target: %.1f)", 
+                             entity_id, current_value, target_value)
                 return True  # Not an error, just suppressed
             
             # Apply the schedule value (Requirement 1.4)
-            success = await self._apply_entity_value(entity_id, target_value, current_slot)
+            if DEBUG_SERVICE_CALLS:
+                _LOGGER.debug("Applying schedule value %.1f to %s", target_value, entity_id)
+                
+            success = await self._apply_entity_value(entity_id, target_value, current_slot, force)
             
             if success:
                 # Record the scheduled change in buffer manager
                 self.buffer_manager.update_scheduled_change(entity_id, target_value)
-                _LOGGER.info("Applied schedule for %s: %.1f°C (slot: %s-%s, mode: %s)", 
+                
+                execution_time = (datetime.now() - start_time).total_seconds()
+                _LOGGER.info("Applied schedule for %s: %.1f°C (slot: %s-%s, mode: %s) in %.3fs", 
                            entity_id, target_value, current_slot.start_time, 
-                           current_slot.end_time, current_mode)
+                           current_slot.end_time, current_mode, execution_time)
+                
+                # Fire event for real-time updates
+                self.hass.bus.async_fire("roost_scheduler_schedule_applied", {
+                    "entity_id": entity_id,
+                    "target_value": target_value,
+                    "mode": current_mode,
+                    "slot_start": current_slot.start_time,
+                    "slot_end": current_slot.end_time,
+                    "forced": force,
+                    "execution_time": execution_time
+                })
+            else:
+                _LOGGER.warning("Failed to apply schedule for %s (target: %.1f)", entity_id, target_value)
             
             return success
             
         except Exception as e:
-            _LOGGER.error("Error applying schedule for %s: %s", entity_id, e)
+            execution_time = (datetime.now() - start_time).total_seconds()
+            _LOGGER.error("Error applying schedule for %s after %.3fs: %s", entity_id, execution_time, e, exc_info=True)
             return False
     
     async def update_slot(self, entity_id: str, mode: str, day: str, time_slot: str, target: Dict[str, Any]) -> bool:
