@@ -3,11 +3,11 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 from homeassistant.core import HomeAssistant
 
-from .models import BufferConfig, EntityState
+from .models import BufferConfig, EntityState, GlobalBufferConfig
 from .const import DEFAULT_BUFFER_TIME_MINUTES, DEFAULT_BUFFER_VALUE_DELTA
 
 _LOGGER = logging.getLogger(__name__)
@@ -20,14 +20,23 @@ DEBUG_MANUAL_CHANGES = False
 class BufferManager:
     """Manages intelligent buffering to avoid conflicts with manual changes."""
     
-    def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize the buffer manager."""
+    def __init__(self, hass: HomeAssistant, storage_service=None) -> None:
+        """Initialize the buffer manager with storage integration."""
         self.hass = hass
+        self.storage_service = storage_service
         self._entity_states: Dict[str, EntityState] = {}
+        self._global_buffer_config = GlobalBufferConfig(
+            time_minutes=DEFAULT_BUFFER_TIME_MINUTES,
+            value_delta=DEFAULT_BUFFER_VALUE_DELTA,
+            enabled=True,
+            apply_to="climate"
+        )
+        # Legacy compatibility - keep _global_buffer for existing code
         self._global_buffer = BufferConfig(
             time_minutes=DEFAULT_BUFFER_TIME_MINUTES,
             value_delta=DEFAULT_BUFFER_VALUE_DELTA,
-            enabled=True
+            enabled=True,
+            apply_to="climate"
         )
     
     def should_suppress_change(self, entity_id: str, target_value: float, 
@@ -64,7 +73,7 @@ class BufferManager:
                 _LOGGER.debug("No entity state for %s, allowing change to %.1f", entity_id, target_value)
             return False
         
-        buffer_config = self.get_buffer_config(slot_config)
+        buffer_config = self.get_buffer_config(slot_config, entity_id)
         if not buffer_config.enabled:
             if DEBUG_BUFFER_LOGIC:
                 _LOGGER.debug("Buffer disabled for %s, allowing change to %.1f", entity_id, target_value)
@@ -144,7 +153,7 @@ class BufferManager:
                 current_value=value,
                 last_manual_change=now,
                 last_scheduled_change=None,
-                buffer_config=self._global_buffer
+                buffer_config=self._global_buffer_config.get_effective_config(entity_id)
             )
             self._entity_states[entity_id] = entity_state
             
@@ -183,7 +192,7 @@ class BufferManager:
                 current_value=value,
                 last_manual_change=None,
                 last_scheduled_change=now,
-                buffer_config=self._global_buffer
+                buffer_config=self._global_buffer_config.get_effective_config(entity_id)
             )
             self._entity_states[entity_id] = entity_state
             
@@ -192,13 +201,14 @@ class BufferManager:
                 entity_id, value, now.strftime("%H:%M:%S")
             )
     
-    def get_buffer_config(self, slot_config: Dict[str, Any]) -> BufferConfig:
+    def get_buffer_config(self, slot_config: Dict[str, Any], entity_id: str = None) -> BufferConfig:
         """
         Get the effective buffer configuration for a slot.
         
-        Implements requirement 2.4: per-slot buffer overrides take precedence over global settings.
+        Implements requirement 2.4: per-slot buffer overrides take precedence over entity-specific and global settings.
+        Priority order: slot override > entity-specific > global
         """
-        # Check for slot-specific override (Requirement 2.4)
+        # Check for slot-specific override (Requirement 2.4) - highest priority
         buffer_override = slot_config.get("buffer_override")
         if buffer_override:
             try:
@@ -217,21 +227,37 @@ class BufferManager:
                 
             except (ValueError, TypeError) as e:
                 _LOGGER.warning(
-                    "Invalid buffer override configuration in slot: %s. Using global buffer config.", 
+                    "Invalid buffer override configuration in slot: %s. Using entity/global buffer config.", 
                     str(e)
                 )
-                # Fall back to global configuration
+                # Fall through to entity/global configuration
         
-        # Use global buffer configuration
-        _LOGGER.debug(
-            "Using global buffer config: time=%d min, delta=%.1f, enabled=%s",
-            self._global_buffer.time_minutes, self._global_buffer.value_delta, self._global_buffer.enabled
-        )
-        return self._global_buffer
+        # Use entity-specific or global buffer configuration
+        if entity_id:
+            config = self._global_buffer_config.get_effective_config(entity_id)
+            _LOGGER.debug(
+                "Using %s buffer config for %s: time=%d min, delta=%.1f, enabled=%s",
+                "entity-specific" if entity_id in self._global_buffer_config.entity_overrides else "global",
+                entity_id, config.time_minutes, config.value_delta, config.enabled
+            )
+            return config
+        else:
+            # Fallback to legacy global buffer for compatibility
+            _LOGGER.debug(
+                "Using global buffer config: time=%d min, delta=%.1f, enabled=%s",
+                self._global_buffer.time_minutes, self._global_buffer.value_delta, self._global_buffer.enabled
+            )
+            return self._global_buffer
     
     def update_global_buffer(self, buffer_config: BufferConfig) -> None:
-        """Update the global buffer configuration."""
+        """Update the global buffer configuration (legacy method for compatibility)."""
         self._global_buffer = buffer_config
+        # Also update the new global buffer config for consistency
+        self._global_buffer_config.time_minutes = buffer_config.time_minutes
+        self._global_buffer_config.value_delta = buffer_config.value_delta
+        self._global_buffer_config.enabled = buffer_config.enabled
+        if hasattr(buffer_config, 'apply_to'):
+            self._global_buffer_config.apply_to = buffer_config.apply_to
         _LOGGER.debug("Updated global buffer config: time=%d min, delta=%.1f", 
                      buffer_config.time_minutes, buffer_config.value_delta)
     
@@ -254,7 +280,7 @@ class BufferManager:
                 current_value=value,
                 last_manual_change=None,
                 last_scheduled_change=None,
-                buffer_config=self._global_buffer
+                buffer_config=self._global_buffer_config.get_effective_config(entity_id)
             )
             self._entity_states[entity_id] = entity_state
     
@@ -313,7 +339,8 @@ class BufferManager:
         return BufferConfig(
             time_minutes=DEFAULT_BUFFER_TIME_MINUTES,
             value_delta=DEFAULT_BUFFER_VALUE_DELTA,
-            enabled=True
+            enabled=True,
+            apply_to="climate"
         )
     
     def apply_buffer_defaults(self, config: Dict[str, Any]) -> BufferConfig:
@@ -326,7 +353,8 @@ class BufferManager:
         defaults = {
             "time_minutes": DEFAULT_BUFFER_TIME_MINUTES,
             "value_delta": DEFAULT_BUFFER_VALUE_DELTA,
-            "enabled": True
+            "enabled": True,
+            "apply_to": "climate"
         }
         
         # Merge provided config with defaults
@@ -337,3 +365,110 @@ class BufferManager:
         except (ValueError, TypeError) as e:
             _LOGGER.warning("Failed to create buffer config with defaults: %s", str(e))
             return self.create_default_buffer_config()
+    
+    async def load_configuration(self) -> None:
+        """Load buffer configuration from storage."""
+        if not self.storage_service:
+            _LOGGER.debug("No storage service available, using default configuration")
+            await self._initialize_default_configuration()
+            return
+        
+        try:
+            schedule_data = await self.storage_service.load_schedules()
+            if schedule_data and schedule_data.buffer_config:
+                self._global_buffer_config = schedule_data.buffer_config
+                # Update legacy _global_buffer for compatibility
+                self._global_buffer = self._global_buffer_config.get_effective_config("")
+                _LOGGER.debug("Loaded buffer configuration from storage")
+            else:
+                _LOGGER.info("No stored buffer configuration found, using defaults")
+                await self._initialize_default_configuration()
+        except Exception as e:
+            _LOGGER.error("Failed to load buffer configuration: %s", e)
+            await self._initialize_default_configuration()
+    
+    async def save_configuration(self) -> None:
+        """Save buffer configuration to storage."""
+        if not self.storage_service:
+            _LOGGER.warning("No storage service available, cannot save configuration")
+            return
+        
+        try:
+            schedule_data = await self.storage_service.load_schedules()
+            if not schedule_data:
+                _LOGGER.error("No schedule data available, cannot save buffer configuration")
+                return
+            
+            schedule_data.buffer_config = self._global_buffer_config
+            await self.storage_service.save_schedules(schedule_data)
+            _LOGGER.debug("Saved buffer configuration to storage")
+        except Exception as e:
+            _LOGGER.error("Failed to save buffer configuration: %s", e)
+    
+    async def update_global_buffer_config(self, config: GlobalBufferConfig) -> None:
+        """Update global buffer configuration and persist to storage."""
+        try:
+            config.validate()
+            self._global_buffer_config = config
+            # Update legacy _global_buffer for compatibility
+            self._global_buffer = config.get_effective_config("")
+            await self.save_configuration()
+            _LOGGER.debug("Updated global buffer configuration")
+        except Exception as e:
+            _LOGGER.error("Failed to update global buffer configuration: %s", e)
+            raise
+    
+    async def update_entity_buffer_config(self, entity_id: str, config: BufferConfig) -> None:
+        """Update entity-specific buffer configuration and persist to storage."""
+        try:
+            config.validate()
+            self._global_buffer_config.set_entity_override(entity_id, config)
+            await self.save_configuration()
+            _LOGGER.debug("Updated buffer configuration for entity %s", entity_id)
+        except Exception as e:
+            _LOGGER.error("Failed to update buffer configuration for entity %s: %s", entity_id, e)
+            raise
+    
+    async def remove_entity_buffer_config(self, entity_id: str) -> bool:
+        """Remove entity-specific buffer configuration and persist to storage."""
+        try:
+            removed = self._global_buffer_config.remove_entity_override(entity_id)
+            if removed:
+                await self.save_configuration()
+                _LOGGER.debug("Removed buffer configuration for entity %s", entity_id)
+            return removed
+        except Exception as e:
+            _LOGGER.error("Failed to remove buffer configuration for entity %s: %s", entity_id, e)
+            return False
+    
+    def get_configuration_summary(self) -> Dict[str, Any]:
+        """Get current configuration for diagnostics."""
+        return {
+            "global_config": self._global_buffer_config.to_dict(),
+            "entity_count": len(self._entity_states),
+            "entities_tracked": list(self._entity_states.keys()),
+            "storage_available": self.storage_service is not None
+        }
+    
+    def get_entity_buffer_config(self, entity_id: str) -> BufferConfig:
+        """Get effective buffer configuration for a specific entity."""
+        return self._global_buffer_config.get_effective_config(entity_id)
+    
+    async def _initialize_default_configuration(self) -> None:
+        """Initialize default buffer configuration."""
+        self._global_buffer_config = GlobalBufferConfig(
+            time_minutes=DEFAULT_BUFFER_TIME_MINUTES,
+            value_delta=DEFAULT_BUFFER_VALUE_DELTA,
+            enabled=True,
+            apply_to="climate"
+        )
+        # Update legacy _global_buffer for compatibility
+        self._global_buffer = self._global_buffer_config.get_effective_config("")
+        
+        # Save default configuration if storage is available
+        if self.storage_service:
+            try:
+                await self.save_configuration()
+                _LOGGER.debug("Saved default buffer configuration to storage")
+            except Exception as e:
+                _LOGGER.warning("Failed to save default buffer configuration: %s", e)

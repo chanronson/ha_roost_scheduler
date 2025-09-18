@@ -3,9 +3,90 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from datetime import datetime, time
 from typing import Any, Dict, Optional, List
+
+
+@dataclass
+class PresenceConfig:
+    """Configuration for presence detection."""
+    entities: List[str] = field(default_factory=list)
+    rule: str = "anyone_home"
+    timeout_seconds: int = 600
+    override_entities: Dict[str, str] = field(default_factory=lambda: {
+        "force_home": "input_boolean.roost_force_home",
+        "force_away": "input_boolean.roost_force_away"
+    })
+    custom_template: Optional[str] = None
+    template_entities: List[str] = field(default_factory=list)
+    
+    def __post_init__(self):
+        """Validate presence configuration after initialization."""
+        self.validate()
+    
+    def validate(self) -> None:
+        """Validate presence configuration values."""
+        # Validate entities list
+        if not isinstance(self.entities, list):
+            raise ValueError("entities must be a list")
+        for entity_id in self.entities:
+            if not isinstance(entity_id, str) or not entity_id:
+                raise ValueError(f"Invalid entity_id in entities: {entity_id}")
+            if '.' not in entity_id:
+                raise ValueError(f"entity_id must be in format 'domain.entity': {entity_id}")
+        
+        # Validate rule
+        valid_rules = {"anyone_home", "everyone_home", "custom"}
+        if self.rule not in valid_rules:
+            raise ValueError(f"rule must be one of {valid_rules}, got {self.rule}")
+        
+        # Validate timeout_seconds
+        if not isinstance(self.timeout_seconds, int) or self.timeout_seconds < 0:
+            raise ValueError(f"timeout_seconds must be a non-negative integer, got {self.timeout_seconds}")
+        if self.timeout_seconds > 86400:  # 24 hours in seconds
+            raise ValueError(f"timeout_seconds cannot exceed 86400 (24 hours), got {self.timeout_seconds}")
+        
+        # Validate override_entities
+        if not isinstance(self.override_entities, dict):
+            raise ValueError("override_entities must be a dictionary")
+        for key, entity_id in self.override_entities.items():
+            if not isinstance(entity_id, str) or not entity_id:
+                raise ValueError(f"Invalid override entity_id for {key}: {entity_id}")
+            if '.' not in entity_id:
+                raise ValueError(f"Override entity_id must be in format 'domain.entity': {entity_id}")
+        
+        # Validate custom_template
+        if self.custom_template is not None and not isinstance(self.custom_template, str):
+            raise ValueError("custom_template must be a string or None")
+        
+        # Validate template_entities
+        if not isinstance(self.template_entities, list):
+            raise ValueError("template_entities must be a list")
+        for entity_id in self.template_entities:
+            if not isinstance(entity_id, str) or not entity_id:
+                raise ValueError(f"Invalid entity_id in template_entities: {entity_id}")
+            if '.' not in entity_id:
+                raise ValueError(f"Template entity_id must be in format 'domain.entity': {entity_id}")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage."""
+        return asdict(self)
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'PresenceConfig':
+        """Create from dictionary loaded from storage."""
+        return cls(
+            entities=data.get("entities", []),
+            rule=data.get("rule", "anyone_home"),
+            timeout_seconds=data.get("timeout_seconds", 600),
+            override_entities=data.get("override_entities", {
+                "force_home": "input_boolean.roost_force_home",
+                "force_away": "input_boolean.roost_force_away"
+            }),
+            custom_template=data.get("custom_template"),
+            template_entities=data.get("template_entities", [])
+        )
 
 
 @dataclass
@@ -14,6 +95,7 @@ class BufferConfig:
     time_minutes: int
     value_delta: float
     enabled: bool = True
+    apply_to: str = "climate"
     
     def __post_init__(self):
         """Validate buffer configuration after initialization."""
@@ -33,6 +115,9 @@ class BufferConfig:
         
         if not isinstance(self.enabled, bool):
             raise ValueError(f"enabled must be a boolean, got {type(self.enabled)}")
+        
+        if not isinstance(self.apply_to, str) or not self.apply_to:
+            raise ValueError(f"apply_to must be a non-empty string, got {self.apply_to}")
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary."""
@@ -44,7 +129,106 @@ class BufferConfig:
         return cls(
             time_minutes=data.get("time_minutes", 15),
             value_delta=data.get("value_delta", 2.0),
-            enabled=data.get("enabled", True)
+            enabled=data.get("enabled", True),
+            apply_to=data.get("apply_to", "climate")
+        )
+
+
+@dataclass
+class GlobalBufferConfig:
+    """Global buffer configuration with entity-specific overrides."""
+    time_minutes: int = 15
+    value_delta: float = 2.0
+    enabled: bool = True
+    apply_to: str = "climate"
+    entity_overrides: Dict[str, BufferConfig] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Validate global buffer configuration after initialization."""
+        self.validate()
+    
+    def validate(self) -> None:
+        """Validate global buffer configuration values."""
+        if not isinstance(self.time_minutes, int) or self.time_minutes < 0:
+            raise ValueError(f"time_minutes must be a non-negative integer, got {self.time_minutes}")
+        if self.time_minutes > 1440:  # 24 hours in minutes
+            raise ValueError(f"time_minutes cannot exceed 1440 (24 hours), got {self.time_minutes}")
+        
+        if not isinstance(self.value_delta, (int, float)) or self.value_delta < 0:
+            raise ValueError(f"value_delta must be a non-negative number, got {self.value_delta}")
+        if self.value_delta > 50:  # Reasonable upper limit for temperature delta
+            raise ValueError(f"value_delta cannot exceed 50, got {self.value_delta}")
+        
+        if not isinstance(self.enabled, bool):
+            raise ValueError(f"enabled must be a boolean, got {type(self.enabled)}")
+        
+        if not isinstance(self.apply_to, str) or not self.apply_to:
+            raise ValueError(f"apply_to must be a non-empty string, got {self.apply_to}")
+        
+        if not isinstance(self.entity_overrides, dict):
+            raise ValueError("entity_overrides must be a dictionary")
+        
+        # Validate each entity override
+        for entity_id, config in self.entity_overrides.items():
+            if not isinstance(entity_id, str) or '.' not in entity_id:
+                raise ValueError(f"Invalid entity_id in overrides: {entity_id}")
+            if not isinstance(config, BufferConfig):
+                raise ValueError(f"Override for {entity_id} must be BufferConfig instance")
+            config.validate()
+    
+    def get_effective_config(self, entity_id: str) -> BufferConfig:
+        """Get effective buffer configuration for an entity."""
+        if entity_id in self.entity_overrides:
+            return self.entity_overrides[entity_id]
+        
+        # Return global config as BufferConfig
+        return BufferConfig(
+            time_minutes=self.time_minutes,
+            value_delta=self.value_delta,
+            enabled=self.enabled,
+            apply_to=self.apply_to
+        )
+    
+    def set_entity_override(self, entity_id: str, config: BufferConfig) -> None:
+        """Set entity-specific buffer override."""
+        if not isinstance(entity_id, str) or '.' not in entity_id:
+            raise ValueError(f"Invalid entity_id: {entity_id}")
+        if not isinstance(config, BufferConfig):
+            raise ValueError("config must be BufferConfig instance")
+        
+        config.validate()
+        self.entity_overrides[entity_id] = config
+    
+    def remove_entity_override(self, entity_id: str) -> bool:
+        """Remove entity-specific buffer override."""
+        return self.entity_overrides.pop(entity_id, None) is not None
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage."""
+        return {
+            "time_minutes": self.time_minutes,
+            "value_delta": self.value_delta,
+            "enabled": self.enabled,
+            "apply_to": self.apply_to,
+            "entity_overrides": {
+                entity_id: config.to_dict() 
+                for entity_id, config in self.entity_overrides.items()
+            }
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'GlobalBufferConfig':
+        """Create from dictionary loaded from storage."""
+        entity_overrides = {}
+        for entity_id, config_data in data.get("entity_overrides", {}).items():
+            entity_overrides[entity_id] = BufferConfig.from_dict(config_data)
+        
+        return cls(
+            time_minutes=data.get("time_minutes", 15),
+            value_delta=data.get("value_delta", 2.0),
+            enabled=data.get("enabled", True),
+            apply_to=data.get("apply_to", "climate"),
+            entity_overrides=entity_overrides
         )
 
 
@@ -249,6 +433,8 @@ class ScheduleData:
     ui: Dict[str, Any]
     schedules: Dict[str, Dict[str, list[ScheduleSlot]]]
     metadata: Dict[str, Any]
+    presence_config: Optional[PresenceConfig] = None
+    buffer_config: Optional[GlobalBufferConfig] = None
     
     # Valid presence rules
     VALID_PRESENCE_RULES = {"anyone_home", "everyone_home", "custom"}
@@ -336,6 +522,18 @@ class ScheduleData:
         # Validate metadata
         if not isinstance(self.metadata, dict):
             raise ValueError("metadata must be a dictionary")
+        
+        # Validate presence_config if present
+        if self.presence_config is not None:
+            if not isinstance(self.presence_config, PresenceConfig):
+                raise ValueError("presence_config must be PresenceConfig instance or None")
+            self.presence_config.validate()
+        
+        # Validate buffer_config if present
+        if self.buffer_config is not None:
+            if not isinstance(self.buffer_config, GlobalBufferConfig):
+                raise ValueError("buffer_config must be GlobalBufferConfig instance or None")
+            self.buffer_config.validate()
     
     def validate_schedule_integrity(self) -> List[str]:
         """Validate schedule integrity and return list of warnings."""
@@ -385,7 +583,7 @@ class ScheduleData:
         for key, config in self.buffer.items():
             buffer_dict[key] = config.to_dict()
         
-        return {
+        result = {
             "version": self.version,
             "entities_tracked": self.entities_tracked,
             "presence_entities": self.presence_entities,
@@ -396,6 +594,14 @@ class ScheduleData:
             "schedules": schedules_dict,
             "metadata": self.metadata
         }
+        
+        if self.presence_config is not None:
+            result["presence_config"] = self.presence_config.to_dict()
+        
+        if self.buffer_config is not None:
+            result["buffer_config"] = self.buffer_config.to_dict()
+        
+        return result
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> ScheduleData:
@@ -415,6 +621,16 @@ class ScheduleData:
                     for slot_data in slots_data
                 ]
         
+        # Parse presence_config if present
+        presence_config = None
+        if "presence_config" in data:
+            presence_config = PresenceConfig.from_dict(data["presence_config"])
+        
+        # Parse buffer_config if present
+        buffer_config = None
+        if "buffer_config" in data:
+            buffer_config = GlobalBufferConfig.from_dict(data["buffer_config"])
+        
         return cls(
             version=data.get("version", "0.3.0"),
             entities_tracked=data.get("entities_tracked", []),
@@ -424,7 +640,9 @@ class ScheduleData:
             buffer=buffer,
             ui=data.get("ui", {}),
             schedules=schedules,
-            metadata=data.get("metadata", {})
+            metadata=data.get("metadata", {}),
+            presence_config=presence_config,
+            buffer_config=buffer_config
         )
     
     def to_json(self) -> str:
