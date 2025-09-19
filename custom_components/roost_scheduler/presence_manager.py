@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Callable, List, Optional
+from typing import Callable, List, Optional, Dict, Any
 
 from homeassistant.core import HomeAssistant, State, Event
 from homeassistant.const import STATE_HOME, STATE_NOT_HOME, EVENT_STATE_CHANGED
@@ -600,6 +600,170 @@ class PresenceManager:
             "storage_service_available": self.storage_service is not None,
             "presence_config_loaded": self._presence_config is not None
         }
+    
+    def validate_configuration(self) -> tuple[bool, List[str]]:
+        """
+        Validate current presence configuration.
+        
+        Returns:
+            Tuple of (is_valid, list_of_errors)
+        """
+        errors = []
+        
+        try:
+            # Validate presence entities
+            if not isinstance(self._presence_entities, list):
+                errors.append("presence_entities must be a list")
+            else:
+                for entity_id in self._presence_entities:
+                    if not isinstance(entity_id, str) or not entity_id:
+                        errors.append(f"Invalid entity_id in presence_entities: {entity_id}")
+                    elif '.' not in entity_id:
+                        errors.append(f"entity_id must be in format 'domain.entity': {entity_id}")
+                    else:
+                        # Check if entity exists in Home Assistant
+                        state = self.hass.states.get(entity_id)
+                        if not state:
+                            errors.append(f"Presence entity not found in Home Assistant: {entity_id}")
+                        else:
+                            # Check if entity domain is suitable for presence detection
+                            domain = entity_id.split('.')[0]
+                            valid_domains = {'device_tracker', 'person', 'binary_sensor', 'input_boolean', 'zone'}
+                            if domain not in valid_domains:
+                                errors.append(f"Entity {entity_id} has domain '{domain}' which may not be suitable for presence detection. Valid domains: {valid_domains}")
+            
+            # Validate presence rule
+            valid_rules = {"anyone_home", "everyone_home", "custom"}
+            if self._presence_rule not in valid_rules:
+                errors.append(f"presence_rule must be one of {valid_rules}, got {self._presence_rule}")
+            
+            # Validate timeout_seconds
+            if not isinstance(self._timeout_seconds, int) or self._timeout_seconds < 0:
+                errors.append(f"timeout_seconds must be a non-negative integer, got {self._timeout_seconds}")
+            elif self._timeout_seconds > 86400:  # 24 hours
+                errors.append(f"timeout_seconds cannot exceed 86400 (24 hours), got {self._timeout_seconds}")
+            elif self._timeout_seconds < 60:  # Less than 1 minute might be too aggressive
+                errors.append(f"timeout_seconds of {self._timeout_seconds} may be too short, consider at least 60 seconds")
+            
+            # Validate override entities
+            if not isinstance(self._override_entities, dict):
+                errors.append("override_entities must be a dictionary")
+            else:
+                for key, entity_id in self._override_entities.items():
+                    if not isinstance(entity_id, str) or not entity_id:
+                        errors.append(f"Invalid override entity_id for {key}: {entity_id}")
+                    elif '.' not in entity_id:
+                        errors.append(f"Override entity_id must be in format 'domain.entity': {entity_id}")
+                    else:
+                        # Check if override entity exists
+                        state = self.hass.states.get(entity_id)
+                        if not state:
+                            errors.append(f"Override entity not found in Home Assistant: {entity_id}")
+                        else:
+                            # Check if override entity is input_boolean
+                            domain = entity_id.split('.')[0]
+                            if domain != 'input_boolean':
+                                errors.append(f"Override entity {entity_id} should be input_boolean, got {domain}")
+            
+            # Validate custom template if present
+            if self._custom_template:
+                try:
+                    # Try to render the template to check for syntax errors
+                    self._custom_template.async_render()
+                except Exception as e:
+                    errors.append(f"Custom template has syntax error: {e}")
+            
+            # Validate template entities
+            if not isinstance(self._template_entities, list):
+                errors.append("template_entities must be a list")
+            else:
+                for entity_id in self._template_entities:
+                    if not isinstance(entity_id, str) or not entity_id:
+                        errors.append(f"Invalid entity_id in template_entities: {entity_id}")
+                    elif '.' not in entity_id:
+                        errors.append(f"Template entity_id must be in format 'domain.entity': {entity_id}")
+                    else:
+                        # Check if template entity exists
+                        state = self.hass.states.get(entity_id)
+                        if not state:
+                            errors.append(f"Template entity not found in Home Assistant: {entity_id}")
+            
+            # Validate consistency between rule and template
+            if self._presence_rule == "custom" and not self._custom_template:
+                errors.append("Custom presence rule specified but no custom template configured")
+            elif self._presence_rule != "custom" and self._custom_template:
+                errors.append("Custom template configured but presence rule is not 'custom'")
+            
+            # Check for empty presence entities when not using custom template
+            if not self._presence_entities and not self._custom_template:
+                errors.append("No presence entities configured and no custom template specified")
+            
+        except Exception as e:
+            errors.append(f"Unexpected error during validation: {e}")
+        
+        return len(errors) == 0, errors
+    
+    def repair_configuration(self) -> tuple[bool, List[str]]:
+        """
+        Attempt to repair common configuration issues.
+        
+        Returns:
+            Tuple of (was_repaired, list_of_repairs_made)
+        """
+        repairs = []
+        
+        try:
+            # Remove invalid presence entities
+            if isinstance(self._presence_entities, list):
+                valid_entities = []
+                for entity_id in self._presence_entities:
+                    if isinstance(entity_id, str) and '.' in entity_id:
+                        state = self.hass.states.get(entity_id)
+                        if state:
+                            valid_entities.append(entity_id)
+                        else:
+                            repairs.append(f"Removed non-existent presence entity: {entity_id}")
+                    else:
+                        repairs.append(f"Removed invalid presence entity: {entity_id}")
+                
+                if len(valid_entities) != len(self._presence_entities):
+                    self._presence_entities = valid_entities
+            
+            # Fix invalid presence rule
+            valid_rules = {"anyone_home", "everyone_home", "custom"}
+            if self._presence_rule not in valid_rules:
+                old_rule = self._presence_rule
+                self._presence_rule = "anyone_home"
+                repairs.append(f"Fixed invalid presence rule from '{old_rule}' to 'anyone_home'")
+            
+            # Fix invalid timeout
+            if not isinstance(self._timeout_seconds, int) or self._timeout_seconds < 0:
+                old_timeout = self._timeout_seconds
+                self._timeout_seconds = 600  # 10 minutes default
+                repairs.append(f"Fixed invalid timeout from {old_timeout} to 600 seconds")
+            elif self._timeout_seconds > 86400:
+                old_timeout = self._timeout_seconds
+                self._timeout_seconds = 86400
+                repairs.append(f"Fixed excessive timeout from {old_timeout} to 86400 seconds (24 hours)")
+            
+            # Fix rule/template consistency
+            if self._presence_rule == "custom" and not self._custom_template:
+                self._presence_rule = "anyone_home"
+                repairs.append("Fixed custom rule without template by changing to 'anyone_home'")
+            elif self._presence_rule != "custom" and self._custom_template:
+                self._custom_template = None
+                self._template_entities = []
+                repairs.append("Removed custom template since rule is not 'custom'")
+            
+            # Ensure we have some presence detection method
+            if not self._presence_entities and not self._custom_template:
+                # Can't automatically fix this, but we can log it
+                repairs.append("Warning: No presence entities or custom template configured")
+            
+        except Exception as e:
+            repairs.append(f"Error during configuration repair: {e}")
+        
+        return len(repairs) > 0, repairs
     
     def _load_from_presence_config(self, config: PresenceConfig) -> None:
         """Load configuration from PresenceConfig object."""

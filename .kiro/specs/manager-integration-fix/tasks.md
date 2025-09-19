@@ -33,7 +33,7 @@ Convert the manager integration fix design into a series of prompts for a code-g
   - git add and git commit
   - _Requirements: 3.1, 3.4, 4.1_
 
-- [-] 4. Implement configuration migration system
+- [x] 4. Implement configuration migration system
   - Create migration functions to move config entry data to storage format
   - Add version detection and migration logic for PresenceManager
   - Add version detection and migration logic for BufferManager
@@ -43,7 +43,7 @@ Convert the manager integration fix design into a series of prompts for a code-g
   - git add and git commit
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
-- [ ] 5. Enhance integration setup with robust error handling
+- [x] 5. Enhance integration setup with robust error handling
   - Update `async_setup_entry` to handle manager initialization failures gracefully
   - Add fallback initialization for managers when storage fails
   - Implement comprehensive error logging and recovery
@@ -53,7 +53,7 @@ Convert the manager integration fix design into a series of prompts for a code-g
   - git add and git commit
   - _Requirements: 5.1, 5.2, 5.3, 5.4, 7.1, 7.2, 7.3, 7.4_
 
-- [ ] 6. Add configuration validation and consistency checks
+- [-] 6. Add configuration validation and consistency checks
   - Implement configuration validation in PresenceManager
   - Implement configuration validation in BufferManager
   - Add cross-manager configuration consistency checks

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 from homeassistant.core import HomeAssistant
 
@@ -441,6 +441,208 @@ class BufferManager:
             "entities_tracked": list(self._entity_states.keys()),
             "storage_available": self.storage_service is not None
         }
+    
+    def validate_configuration(self) -> tuple[bool, List[str]]:
+        """
+        Validate current buffer configuration.
+        
+        Returns:
+            Tuple of (is_valid, list_of_errors)
+        """
+        errors = []
+        
+        try:
+            # Validate global buffer configuration
+            try:
+                self._global_buffer_config.validate()
+            except ValueError as e:
+                errors.append(f"Global buffer configuration error: {e}")
+            
+            # Validate legacy global buffer for compatibility
+            try:
+                self._global_buffer.validate()
+            except ValueError as e:
+                errors.append(f"Legacy global buffer configuration error: {e}")
+            
+            # Validate entity-specific overrides
+            for entity_id, config in self._global_buffer_config.entity_overrides.items():
+                # Check entity_id format
+                if not isinstance(entity_id, str) or '.' not in entity_id:
+                    errors.append(f"Invalid entity_id in buffer overrides: {entity_id}")
+                    continue
+                
+                # Check if entity exists in Home Assistant
+                state = self.hass.states.get(entity_id)
+                if not state:
+                    errors.append(f"Buffer override entity not found in Home Assistant: {entity_id}")
+                else:
+                    # Check if entity domain is suitable for buffering
+                    domain = entity_id.split('.')[0]
+                    suitable_domains = {'climate', 'input_number', 'number', 'fan', 'light'}
+                    if domain not in suitable_domains:
+                        errors.append(f"Entity {entity_id} has domain '{domain}' which may not be suitable for buffering. Suitable domains: {suitable_domains}")
+                
+                # Validate the buffer config itself
+                try:
+                    config.validate()
+                except ValueError as e:
+                    errors.append(f"Buffer override for {entity_id} is invalid: {e}")
+            
+            # Validate entity states
+            for entity_id, entity_state in self._entity_states.items():
+                try:
+                    entity_state.validate()
+                except ValueError as e:
+                    errors.append(f"Entity state for {entity_id} is invalid: {e}")
+                
+                # Check if tracked entity still exists
+                state = self.hass.states.get(entity_id)
+                if not state:
+                    errors.append(f"Tracked entity no longer exists in Home Assistant: {entity_id}")
+            
+            # Check for reasonable buffer values
+            if self._global_buffer_config.time_minutes == 0 and self._global_buffer_config.enabled:
+                errors.append("Buffer time is 0 minutes but buffering is enabled - this may cause unexpected behavior")
+            
+            if self._global_buffer_config.value_delta == 0 and self._global_buffer_config.enabled:
+                errors.append("Buffer value delta is 0 but buffering is enabled - this may prevent all changes")
+            
+            # Check for consistency between global and legacy configs
+            legacy_config = self._global_buffer_config.get_effective_config("")
+            if (self._global_buffer.time_minutes != legacy_config.time_minutes or
+                self._global_buffer.value_delta != legacy_config.value_delta or
+                self._global_buffer.enabled != legacy_config.enabled):
+                errors.append("Inconsistency detected between global and legacy buffer configurations")
+            
+        except Exception as e:
+            errors.append(f"Unexpected error during validation: {e}")
+        
+        return len(errors) == 0, errors
+    
+    def repair_configuration(self) -> tuple[bool, List[str]]:
+        """
+        Attempt to repair common buffer configuration issues.
+        
+        Returns:
+            Tuple of (was_repaired, list_of_repairs_made)
+        """
+        repairs = []
+        
+        try:
+            # Fix global buffer configuration values
+            if self._global_buffer_config.time_minutes < 0:
+                old_value = self._global_buffer_config.time_minutes
+                self._global_buffer_config.time_minutes = 15
+                repairs.append(f"Fixed negative buffer time from {old_value} to 15 minutes")
+            elif self._global_buffer_config.time_minutes > 1440:
+                old_value = self._global_buffer_config.time_minutes
+                self._global_buffer_config.time_minutes = 1440
+                repairs.append(f"Fixed excessive buffer time from {old_value} to 1440 minutes (24 hours)")
+            
+            if self._global_buffer_config.value_delta < 0:
+                old_value = self._global_buffer_config.value_delta
+                self._global_buffer_config.value_delta = 2.0
+                repairs.append(f"Fixed negative buffer delta from {old_value} to 2.0")
+            elif self._global_buffer_config.value_delta > 50:
+                old_value = self._global_buffer_config.value_delta
+                self._global_buffer_config.value_delta = 50.0
+                repairs.append(f"Fixed excessive buffer delta from {old_value} to 50.0")
+            
+            if not isinstance(self._global_buffer_config.enabled, bool):
+                old_value = self._global_buffer_config.enabled
+                self._global_buffer_config.enabled = True
+                repairs.append(f"Fixed invalid buffer enabled value from {old_value} to True")
+            
+            if not isinstance(self._global_buffer_config.apply_to, str) or not self._global_buffer_config.apply_to:
+                old_value = self._global_buffer_config.apply_to
+                self._global_buffer_config.apply_to = "climate"
+                repairs.append(f"Fixed invalid apply_to value from '{old_value}' to 'climate'")
+            
+            # Remove invalid entity overrides
+            invalid_entities = []
+            for entity_id, config in self._global_buffer_config.entity_overrides.items():
+                if not isinstance(entity_id, str) or '.' not in entity_id:
+                    invalid_entities.append(entity_id)
+                    continue
+                
+                # Check if entity still exists
+                state = self.hass.states.get(entity_id)
+                if not state:
+                    invalid_entities.append(entity_id)
+                    continue
+                
+                # Try to fix the config if it's invalid
+                try:
+                    config.validate()
+                except ValueError:
+                    try:
+                        # Attempt to repair the config
+                        if config.time_minutes < 0:
+                            config.time_minutes = 15
+                        elif config.time_minutes > 1440:
+                            config.time_minutes = 1440
+                        
+                        if config.value_delta < 0:
+                            config.value_delta = 2.0
+                        elif config.value_delta > 50:
+                            config.value_delta = 50.0
+                        
+                        if not isinstance(config.enabled, bool):
+                            config.enabled = True
+                        
+                        if not isinstance(config.apply_to, str) or not config.apply_to:
+                            config.apply_to = "climate"
+                        
+                        config.validate()  # Validate again
+                        repairs.append(f"Repaired buffer override configuration for {entity_id}")
+                    except ValueError:
+                        invalid_entities.append(entity_id)
+            
+            # Remove invalid entity overrides
+            for entity_id in invalid_entities:
+                self._global_buffer_config.entity_overrides.pop(entity_id, None)
+                repairs.append(f"Removed invalid buffer override for entity: {entity_id}")
+            
+            # Remove invalid entity states
+            invalid_states = []
+            for entity_id, entity_state in self._entity_states.items():
+                if not isinstance(entity_id, str) or '.' not in entity_id:
+                    invalid_states.append(entity_id)
+                    continue
+                
+                # Check if entity still exists
+                state = self.hass.states.get(entity_id)
+                if not state:
+                    invalid_states.append(entity_id)
+                    continue
+                
+                # Try to fix entity state
+                try:
+                    if not isinstance(entity_state.current_value, (int, float)):
+                        entity_state.current_value = 0.0
+                        repairs.append(f"Fixed invalid current_value for {entity_id}")
+                    
+                    entity_state.validate()
+                except ValueError:
+                    invalid_states.append(entity_id)
+            
+            # Remove invalid entity states
+            for entity_id in invalid_states:
+                self._entity_states.pop(entity_id, None)
+                repairs.append(f"Removed invalid entity state for: {entity_id}")
+            
+            # Sync legacy buffer config with global config
+            legacy_config = self._global_buffer_config.get_effective_config("")
+            if (self._global_buffer.time_minutes != legacy_config.time_minutes or
+                self._global_buffer.value_delta != legacy_config.value_delta or
+                self._global_buffer.enabled != legacy_config.enabled):
+                self._global_buffer = legacy_config
+                repairs.append("Synchronized legacy buffer config with global config")
+            
+        except Exception as e:
+            repairs.append(f"Error during configuration repair: {e}")
+        
+        return len(repairs) > 0, repairs
     
     def get_entity_buffer_config(self, entity_id: str) -> BufferConfig:
         """Get effective buffer configuration for a specific entity."""

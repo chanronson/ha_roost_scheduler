@@ -186,6 +186,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await _cleanup_entry_data(hass, entry)
             return False
         
+        # Initialize configuration validator and perform validation
+        from .config_validator import ConfigurationValidator
+        config_validator = None
+        try:
+            config_validator = ConfigurationValidator(presence_manager, buffer_manager, schedule_manager)
+            
+            # Validate all configurations
+            all_valid, validation_errors = config_validator.validate_all_configurations()
+            if not all_valid:
+                _LOGGER.warning("Configuration validation found issues: %s", validation_errors)
+                setup_diagnostics["warnings"].append("Configuration validation found issues")
+                
+                # Attempt to repair configuration issues
+                any_repairs, repair_results = config_validator.repair_all_configurations()
+                if any_repairs:
+                    _LOGGER.info("Configuration repairs applied: %s", repair_results)
+                    setup_diagnostics["configuration_repairs"] = repair_results
+                    
+                    # Re-validate after repairs
+                    all_valid_after_repair, remaining_errors = config_validator.validate_all_configurations()
+                    if all_valid_after_repair:
+                        _LOGGER.info("All configuration issues resolved after repair")
+                    else:
+                        _LOGGER.warning("Some configuration issues remain after repair: %s", remaining_errors)
+                        setup_diagnostics["warnings"].append("Some configuration issues could not be automatically repaired")
+            else:
+                _LOGGER.debug("All configurations validated successfully")
+            
+            setup_diagnostics["components_initialized"].append("config_validator")
+        except Exception as e:
+            _LOGGER.warning("Configuration validation failed: %s", e)
+            setup_diagnostics["warnings"].append(f"Configuration validation failed: {str(e)}")
+            # Continue setup even if validation fails - not critical
+        
         # Store services in hass.data
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -194,6 +228,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "presence_manager": presence_manager,
             "buffer_manager": buffer_manager,
             "logging_manager": logging_manager,
+            "config_validator": config_validator,
             "setup_diagnostics": setup_diagnostics,
         }
         
