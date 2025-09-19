@@ -25,7 +25,9 @@ from .const import (
     WEEKDAYS,
     MIN_HA_VERSION,
     REQUIRED_DOMAINS,
-    OPTIONAL_DOMAINS
+    OPTIONAL_DOMAINS,
+    MODE_HOME,
+    MODE_AWAY
 )
 from .schedule_manager import ScheduleManager
 from .storage import StorageService
@@ -82,26 +84,107 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Roost Scheduler from a config entry."""
+    """Set up Roost Scheduler from a config entry with robust error handling."""
     _LOGGER.info("Setting up Roost Scheduler config entry: %s", entry.entry_id)
     
+    setup_diagnostics = {
+        "entry_id": entry.entry_id,
+        "start_time": datetime.now(),
+        "components_initialized": [],
+        "components_failed": [],
+        "warnings": [],
+        "fallbacks_used": []
+    }
+    
     try:
-        # Initialize logging manager
-        logging_manager = LoggingManager(hass)
-        await logging_manager.async_setup()
+        # Initialize logging manager with error handling
+        logging_manager = None
+        try:
+            logging_manager = LoggingManager(hass)
+            await logging_manager.async_setup()
+            setup_diagnostics["components_initialized"].append("logging_manager")
+            _LOGGER.debug("Logging manager initialized successfully")
+        except Exception as e:
+            _LOGGER.error("Failed to initialize logging manager: %s", e)
+            setup_diagnostics["components_failed"].append({"component": "logging_manager", "error": str(e)})
+            setup_diagnostics["warnings"].append("Logging manager initialization failed - continuing without enhanced logging")
+            # Continue without logging manager - not critical for core functionality
         
-        # Initialize storage service
-        storage_service = StorageService(hass, entry.entry_id)
+        # Initialize storage service with error handling
+        storage_service = None
+        try:
+            storage_service = StorageService(hass, entry.entry_id)
+            setup_diagnostics["components_initialized"].append("storage_service")
+            _LOGGER.debug("Storage service initialized successfully")
+        except Exception as e:
+            _LOGGER.error("Critical error: Failed to initialize storage service: %s", e)
+            setup_diagnostics["components_failed"].append({"component": "storage_service", "error": str(e)})
+            await _cleanup_entry_data(hass, entry)
+            return False
         
-        # Initialize presence manager and buffer manager
+        # Initialize managers with robust error handling and fallbacks
         from .presence_manager import PresenceManager
         from .buffer_manager import BufferManager
         
-        presence_manager = PresenceManager(hass, storage_service)
-        buffer_manager = BufferManager(hass, storage_service)
+        # Initialize presence manager with fallback
+        presence_manager = None
+        try:
+            presence_manager = PresenceManager(hass, storage_service)
+            await presence_manager.load_configuration()
+            setup_diagnostics["components_initialized"].append("presence_manager")
+            _LOGGER.debug("Presence manager initialized successfully")
+        except Exception as e:
+            _LOGGER.error("Failed to initialize presence manager: %s", e)
+            setup_diagnostics["components_failed"].append({"component": "presence_manager", "error": str(e)})
+            
+            # Attempt fallback initialization
+            try:
+                _LOGGER.info("Attempting fallback initialization for presence manager")
+                presence_manager = PresenceManager(hass, storage_service)
+                await presence_manager._initialize_default_configuration()
+                setup_diagnostics["fallbacks_used"].append("presence_manager_fallback")
+                setup_diagnostics["warnings"].append("Presence manager using fallback initialization")
+                _LOGGER.warning("Presence manager initialized with fallback configuration")
+            except Exception as fallback_error:
+                _LOGGER.error("Fallback initialization failed for presence manager: %s", fallback_error)
+                await _cleanup_entry_data(hass, entry)
+                return False
         
-        # Initialize schedule manager with all dependencies
-        schedule_manager = ScheduleManager(hass, storage_service, presence_manager, buffer_manager)
+        # Initialize buffer manager with fallback
+        buffer_manager = None
+        try:
+            buffer_manager = BufferManager(hass, storage_service)
+            await buffer_manager.load_configuration()
+            setup_diagnostics["components_initialized"].append("buffer_manager")
+            _LOGGER.debug("Buffer manager initialized successfully")
+        except Exception as e:
+            _LOGGER.error("Failed to initialize buffer manager: %s", e)
+            setup_diagnostics["components_failed"].append({"component": "buffer_manager", "error": str(e)})
+            
+            # Attempt fallback initialization
+            try:
+                _LOGGER.info("Attempting fallback initialization for buffer manager")
+                buffer_manager = BufferManager(hass, storage_service)
+                await buffer_manager._initialize_default_configuration()
+                setup_diagnostics["fallbacks_used"].append("buffer_manager_fallback")
+                setup_diagnostics["warnings"].append("Buffer manager using fallback initialization")
+                _LOGGER.warning("Buffer manager initialized with fallback configuration")
+            except Exception as fallback_error:
+                _LOGGER.error("Fallback initialization failed for buffer manager: %s", fallback_error)
+                await _cleanup_entry_data(hass, entry)
+                return False
+        
+        # Initialize schedule manager with error handling
+        schedule_manager = None
+        try:
+            schedule_manager = ScheduleManager(hass, storage_service, presence_manager, buffer_manager)
+            setup_diagnostics["components_initialized"].append("schedule_manager")
+            _LOGGER.debug("Schedule manager initialized successfully")
+        except Exception as e:
+            _LOGGER.error("Critical error: Failed to initialize schedule manager: %s", e)
+            setup_diagnostics["components_failed"].append({"component": "schedule_manager", "error": str(e)})
+            await _cleanup_entry_data(hass, entry)
+            return False
         
         # Store services in hass.data
         hass.data.setdefault(DOMAIN, {})
@@ -111,6 +194,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "presence_manager": presence_manager,
             "buffer_manager": buffer_manager,
             "logging_manager": logging_manager,
+            "setup_diagnostics": setup_diagnostics,
         }
         
         # Load existing schedules with error handling
@@ -119,14 +203,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.info("Successfully loaded schedule data for entry %s", entry.entry_id)
         except Exception as e:
             _LOGGER.error("Failed to load schedules for entry %s: %s", entry.entry_id, e)
+            setup_diagnostics["warnings"].append(f"Schedule loading failed: {str(e)}")
             # Continue setup even if schedule loading fails - will use defaults
         
         # Register services with error handling
         try:
             await _register_services(hass, schedule_manager)
+            setup_diagnostics["components_initialized"].append("services")
             _LOGGER.info("Successfully registered services for entry %s", entry.entry_id)
         except Exception as e:
             _LOGGER.error("Failed to register services for entry %s: %s", entry.entry_id, e)
+            setup_diagnostics["components_failed"].append({"component": "services", "error": str(e)})
             # This is more critical - cleanup and fail
             await _cleanup_entry_data(hass, entry)
             return False
@@ -134,24 +221,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Register WebSocket API handlers with error handling
         try:
             _register_websocket_handlers(hass)
+            setup_diagnostics["components_initialized"].append("websocket_handlers")
             _LOGGER.info("Successfully registered WebSocket handlers for entry %s", entry.entry_id)
         except Exception as e:
             _LOGGER.warning("Failed to register WebSocket handlers for entry %s: %s", entry.entry_id, e)
+            setup_diagnostics["components_failed"].append({"component": "websocket_handlers", "error": str(e)})
+            setup_diagnostics["warnings"].append("WebSocket handlers failed - real-time updates unavailable")
             # WebSocket failures are not critical - continue without real-time updates
         
-        # Final setup validation
+        # Final setup validation with comprehensive checks
         try:
-            await _validate_setup(hass, entry)
+            validation_results = await _validate_setup(hass, entry)
+            setup_diagnostics["validation_results"] = validation_results
             _LOGGER.info("Setup validation completed successfully for entry %s", entry.entry_id)
         except Exception as e:
             _LOGGER.warning("Setup validation failed for entry %s: %s", entry.entry_id, e)
+            setup_diagnostics["warnings"].append(f"Setup validation failed: {str(e)}")
             # Validation failures are warnings, not critical errors
+        
+        # Log setup summary
+        setup_diagnostics["end_time"] = datetime.now()
+        setup_diagnostics["duration_seconds"] = (setup_diagnostics["end_time"] - setup_diagnostics["start_time"]).total_seconds()
+        
+        _log_setup_summary(setup_diagnostics)
         
         _LOGGER.info("Roost Scheduler setup completed successfully for entry %s", entry.entry_id)
         return True
         
     except Exception as e:
         _LOGGER.error("Critical error during setup for entry %s: %s", entry.entry_id, e, exc_info=True)
+        setup_diagnostics["critical_error"] = str(e)
+        setup_diagnostics["end_time"] = datetime.now()
+        
+        # Log failure diagnostics
+        _log_setup_failure(setup_diagnostics)
+        
         # Cleanup any partial setup
         await _cleanup_entry_data(hass, entry)
         return False
@@ -564,36 +668,271 @@ async def _cleanup_entry_data(hass: HomeAssistant, entry: ConfigEntry) -> None:
         _LOGGER.error("Error during cleanup for entry %s: %s", entry.entry_id, e)
 
 
-async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Validate that setup completed successfully."""
-    entry_data = hass.data[DOMAIN][entry.entry_id]
+async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> dict:
+    """Validate that setup completed successfully and return validation results."""
+    validation_results = {
+        "components_validated": [],
+        "components_failed": [],
+        "functionality_tests": [],
+        "warnings": [],
+        "overall_status": "unknown"
+    }
     
-    # Check that all required components are present
-    required_components = ["storage_service", "schedule_manager", "presence_manager", "buffer_manager"]
-    for component in required_components:
-        if component not in entry_data:
-            raise ValueError(f"Missing required component: {component}")
-    
-    # Test basic functionality
-    schedule_manager = entry_data["schedule_manager"]
-    
-    # Verify schedule manager can load data
     try:
-        await schedule_manager._load_schedule_data()
-    except Exception as e:
-        _LOGGER.warning("Schedule manager data loading test failed: %s", e)
-    
-    # Verify presence manager can evaluate mode
-    try:
+        entry_data = hass.data[DOMAIN][entry.entry_id]
+        
+        # Check that all required components are present
+        required_components = ["storage_service", "schedule_manager", "presence_manager", "buffer_manager"]
+        missing_components = []
+        
+        for component in required_components:
+            if component not in entry_data or entry_data[component] is None:
+                missing_components.append(component)
+                validation_results["components_failed"].append(component)
+            else:
+                validation_results["components_validated"].append(component)
+        
+        if missing_components:
+            raise ValueError(f"Missing required components: {', '.join(missing_components)}")
+        
+        # Test basic functionality
+        schedule_manager = entry_data["schedule_manager"]
         presence_manager = entry_data["presence_manager"]
-        current_mode = await presence_manager.get_current_mode()
-        if current_mode not in [MODE_HOME, MODE_AWAY]:
-            raise ValueError(f"Invalid presence mode: {current_mode}")
+        buffer_manager = entry_data["buffer_manager"]
+        storage_service = entry_data["storage_service"]
+        
+        # Verify schedule manager can load data
+        try:
+            await schedule_manager._load_schedule_data()
+            validation_results["functionality_tests"].append({"test": "schedule_data_loading", "status": "passed"})
+        except Exception as e:
+            _LOGGER.warning("Schedule manager data loading test failed: %s", e)
+            validation_results["functionality_tests"].append({"test": "schedule_data_loading", "status": "failed", "error": str(e)})
+            validation_results["warnings"].append(f"Schedule data loading test failed: {str(e)}")
+        
+        # Verify presence manager can evaluate mode
+        try:
+            current_mode = await presence_manager.get_current_mode()
+            if current_mode not in [MODE_HOME, MODE_AWAY]:
+                raise ValueError(f"Invalid presence mode: {current_mode}")
+            validation_results["functionality_tests"].append({"test": "presence_mode_evaluation", "status": "passed", "mode": current_mode})
+        except Exception as e:
+            _LOGGER.warning("Presence manager test failed: %s", e)
+            validation_results["functionality_tests"].append({"test": "presence_mode_evaluation", "status": "failed", "error": str(e)})
+            validation_results["warnings"].append(f"Presence manager test failed: {str(e)}")
+        
+        # Verify buffer manager functionality
+        try:
+            # Test buffer manager with a simple check
+            test_entity = "climate.test"
+            should_suppress = buffer_manager.should_suppress_change(test_entity, 20.0, {})
+            validation_results["functionality_tests"].append({"test": "buffer_manager_logic", "status": "passed"})
+        except Exception as e:
+            _LOGGER.warning("Buffer manager test failed: %s", e)
+            validation_results["functionality_tests"].append({"test": "buffer_manager_logic", "status": "failed", "error": str(e)})
+            validation_results["warnings"].append(f"Buffer manager test failed: {str(e)}")
+        
+        # Verify storage service functionality
+        try:
+            # Test storage service basic operations
+            await storage_service._ensure_storage_initialized()
+            validation_results["functionality_tests"].append({"test": "storage_service_initialization", "status": "passed"})
+        except Exception as e:
+            _LOGGER.warning("Storage service test failed: %s", e)
+            validation_results["functionality_tests"].append({"test": "storage_service_initialization", "status": "failed", "error": str(e)})
+            validation_results["warnings"].append(f"Storage service test failed: {str(e)}")
+        
+        # Check service registration
+        services_registered = []
+        services_missing = []
+        
+        expected_services = [SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW, SERVICE_MIGRATE_RESOLUTION]
+        for service in expected_services:
+            if hass.services.has_service(DOMAIN, service):
+                services_registered.append(service)
+            else:
+                services_missing.append(service)
+        
+        if services_missing:
+            raise ValueError(f"Services not properly registered: {', '.join(services_missing)}")
+        
+        validation_results["functionality_tests"].append({
+            "test": "service_registration", 
+            "status": "passed", 
+            "services_registered": services_registered
+        })
+        
+        # Determine overall status
+        failed_tests = [test for test in validation_results["functionality_tests"] if test["status"] == "failed"]
+        if not validation_results["components_failed"] and not failed_tests:
+            validation_results["overall_status"] = "passed"
+        elif validation_results["components_failed"]:
+            validation_results["overall_status"] = "failed"
+        else:
+            validation_results["overall_status"] = "passed_with_warnings"
+        
+        _LOGGER.debug("Setup validation completed for entry %s with status: %s", 
+                     entry.entry_id, validation_results["overall_status"])
+        
+        return validation_results
+        
     except Exception as e:
-        _LOGGER.warning("Presence manager test failed: %s", e)
+        validation_results["overall_status"] = "failed"
+        validation_results["critical_error"] = str(e)
+        _LOGGER.error("Critical error during setup validation: %s", e)
+        raise
+
+
+def _log_setup_summary(setup_diagnostics: dict) -> None:
+    """Log a comprehensive setup summary."""
+    entry_id = setup_diagnostics["entry_id"]
+    duration = setup_diagnostics["duration_seconds"]
     
-    # Check service registration
-    if not hass.services.has_service(DOMAIN, SERVICE_APPLY_SLOT):
-        raise ValueError("Services not properly registered")
+    _LOGGER.info("=== Roost Scheduler Setup Summary for %s ===", entry_id)
+    _LOGGER.info("Setup Duration: %.2f seconds", duration)
     
-    _LOGGER.debug("Setup validation completed for entry %s", entry.entry_id)
+    if setup_diagnostics["components_initialized"]:
+        _LOGGER.info("Components Initialized: %s", ", ".join(setup_diagnostics["components_initialized"]))
+    
+    if setup_diagnostics["components_failed"]:
+        _LOGGER.warning("Components Failed: %s", 
+                       ", ".join([f"{c['component']} ({c['error']})" for c in setup_diagnostics["components_failed"]]))
+    
+    if setup_diagnostics["fallbacks_used"]:
+        _LOGGER.warning("Fallbacks Used: %s", ", ".join(setup_diagnostics["fallbacks_used"]))
+    
+    if setup_diagnostics["warnings"]:
+        _LOGGER.warning("Setup Warnings:")
+        for warning in setup_diagnostics["warnings"]:
+            _LOGGER.warning("  - %s", warning)
+    
+    if "validation_results" in setup_diagnostics:
+        validation = setup_diagnostics["validation_results"]
+        _LOGGER.info("Validation Status: %s", validation["overall_status"])
+        
+        if validation["functionality_tests"]:
+            passed_tests = [t for t in validation["functionality_tests"] if t["status"] == "passed"]
+            failed_tests = [t for t in validation["functionality_tests"] if t["status"] == "failed"]
+            
+            _LOGGER.info("Functionality Tests: %d passed, %d failed", len(passed_tests), len(failed_tests))
+            
+            if failed_tests:
+                for test in failed_tests:
+                    _LOGGER.warning("  Failed Test: %s - %s", test["test"], test.get("error", "Unknown error"))
+    
+    _LOGGER.info("=== End Setup Summary ===")
+
+
+def _log_setup_failure(setup_diagnostics: dict) -> None:
+    """Log detailed information about setup failure for troubleshooting."""
+    entry_id = setup_diagnostics["entry_id"]
+    
+    _LOGGER.error("=== Roost Scheduler Setup FAILED for %s ===", entry_id)
+    
+    if "duration_seconds" in setup_diagnostics:
+        duration = (setup_diagnostics["end_time"] - setup_diagnostics["start_time"]).total_seconds()
+        _LOGGER.error("Failed after %.2f seconds", duration)
+    
+    if setup_diagnostics["components_initialized"]:
+        _LOGGER.error("Components that initialized successfully: %s", 
+                     ", ".join(setup_diagnostics["components_initialized"]))
+    
+    if setup_diagnostics["components_failed"]:
+        _LOGGER.error("Components that failed to initialize:")
+        for component in setup_diagnostics["components_failed"]:
+            _LOGGER.error("  - %s: %s", component["component"], component["error"])
+    
+    if "critical_error" in setup_diagnostics:
+        _LOGGER.error("Critical Error: %s", setup_diagnostics["critical_error"])
+    
+    _LOGGER.error("=== Troubleshooting Suggestions ===")
+    _LOGGER.error("1. Check Home Assistant logs for detailed error messages")
+    _LOGGER.error("2. Verify all required dependencies are installed")
+    _LOGGER.error("3. Check storage permissions and disk space")
+    _LOGGER.error("4. Try removing and re-adding the integration")
+    _LOGGER.error("5. Report this issue with the full log output")
+    _LOGGER.error("=== End Setup Failure Report ===")
+
+
+async def get_setup_diagnostics(hass: HomeAssistant, entry_id: str) -> dict:
+    """Get comprehensive setup diagnostics for troubleshooting."""
+    diagnostics = {
+        "entry_id": entry_id,
+        "timestamp": datetime.now().isoformat(),
+        "integration_status": "unknown",
+        "components": {},
+        "configuration": {},
+        "system_info": {},
+        "recommendations": []
+    }
+    
+    try:
+        # Check if entry exists in hass.data
+        if DOMAIN not in hass.data or entry_id not in hass.data[DOMAIN]:
+            diagnostics["integration_status"] = "not_initialized"
+            diagnostics["recommendations"].append("Integration not found - try reloading the integration")
+            return diagnostics
+        
+        entry_data = hass.data[DOMAIN][entry_id]
+        diagnostics["integration_status"] = "initialized"
+        
+        # Get setup diagnostics if available
+        if "setup_diagnostics" in entry_data:
+            diagnostics["setup_history"] = entry_data["setup_diagnostics"]
+        
+        # Check component status
+        required_components = ["storage_service", "schedule_manager", "presence_manager", "buffer_manager"]
+        for component in required_components:
+            if component in entry_data and entry_data[component] is not None:
+                diagnostics["components"][component] = "initialized"
+                
+                # Get component-specific diagnostics
+                try:
+                    if hasattr(entry_data[component], 'get_diagnostics'):
+                        diagnostics["components"][f"{component}_details"] = await entry_data[component].get_diagnostics()
+                except Exception as e:
+                    diagnostics["components"][f"{component}_diagnostics_error"] = str(e)
+            else:
+                diagnostics["components"][component] = "missing"
+                diagnostics["recommendations"].append(f"Component {component} is missing - integration may not function properly")
+        
+        # Get configuration information
+        try:
+            if "presence_manager" in entry_data and entry_data["presence_manager"]:
+                presence_config = await entry_data["presence_manager"].get_configuration_summary()
+                diagnostics["configuration"]["presence"] = presence_config
+        except Exception as e:
+            diagnostics["configuration"]["presence_error"] = str(e)
+        
+        try:
+            if "buffer_manager" in entry_data and entry_data["buffer_manager"]:
+                buffer_config = await entry_data["buffer_manager"].get_configuration_summary()
+                diagnostics["configuration"]["buffer"] = buffer_config
+        except Exception as e:
+            diagnostics["configuration"]["buffer_error"] = str(e)
+        
+        # System information
+        diagnostics["system_info"] = {
+            "ha_version": hass.config.as_dict().get("version", "unknown"),
+            "domain_loaded": DOMAIN in hass.config.components,
+            "services_registered": [
+                service for service in [SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW, SERVICE_MIGRATE_RESOLUTION]
+                if hass.services.has_service(DOMAIN, service)
+            ]
+        }
+        
+        # Generate recommendations based on findings
+        if not diagnostics["system_info"]["services_registered"]:
+            diagnostics["recommendations"].append("No services registered - integration may not be functioning")
+        
+        missing_components = [comp for comp, status in diagnostics["components"].items() 
+                            if status == "missing" and not comp.endswith("_details") and not comp.endswith("_error")]
+        if missing_components:
+            diagnostics["recommendations"].append(f"Missing components: {', '.join(missing_components)}")
+        
+    except Exception as e:
+        diagnostics["error"] = str(e)
+        diagnostics["integration_status"] = "error"
+        diagnostics["recommendations"].append("Critical error getting diagnostics - check logs for details")
+    
+    return diagnostics
