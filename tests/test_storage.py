@@ -129,23 +129,34 @@ class TestStorageService:
     
     @pytest.mark.asyncio
     async def test_save_schedules_invalid_data(self, storage_service):
-        """Test saving invalid data raises error."""
-        # Create invalid schedule data
-        invalid_data = ScheduleData(
-            version="",  # Invalid empty version
-            entities_tracked=[],
-            presence_entities=[],
-            presence_rule="invalid_rule",  # Invalid rule
-            presence_timeout_seconds=-1,  # Invalid timeout
-            buffer={},
-            ui={},
-            schedules={},
-            metadata={}
-        )
+        """Test that invalid data cannot be created due to validation."""
+        # Test that creating invalid schedule data raises validation error
+        with pytest.raises(ValueError, match="version must be a non-empty string"):
+            ScheduleData(
+                version="",  # Invalid empty version
+                entities_tracked=[],
+                presence_entities=[],
+                presence_rule="invalid_rule",  # Invalid rule
+                presence_timeout_seconds=-1,  # Invalid timeout
+                buffer={},
+                ui={},
+                schedules={},
+                metadata={}
+            )
         
-        # Attempt to save invalid data
-        with pytest.raises(StorageError):
-            await storage_service.save_schedules(invalid_data)
+        # Test another validation error
+        with pytest.raises(ValueError, match="rule must be one of"):
+            ScheduleData(
+                version="0.3.0",
+                entities_tracked=[],
+                presence_entities=[],
+                presence_rule="invalid_rule",  # Invalid rule
+                presence_timeout_seconds=600,
+                buffer={},
+                ui={},
+                schedules={"home": {}, "away": {}},
+                metadata={}
+            )
     
     @pytest.mark.asyncio
     async def test_export_backup_success(self, storage_service, sample_schedule_data):
