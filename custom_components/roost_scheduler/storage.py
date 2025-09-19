@@ -385,3 +385,25 @@ class StorageService:
                     _LOGGER.error("Error removing old backup %s: %s", old_file, e)
         except Exception as e:
             _LOGGER.error("Error during backup cleanup: %s", e)
+    
+    def get_config_entry_data(self) -> Optional[Dict[str, Any]]:
+        """Get config entry data for migration purposes."""
+        try:
+            # Access the config entry from Home Assistant
+            from homeassistant.config_entries import ConfigEntry
+            from .const import DOMAIN
+            
+            # Find the config entry for this entry_id
+            for entry in self.hass.config_entries.async_entries(DOMAIN):
+                if entry.entry_id == self.entry_id:
+                    # Return both entry data and options
+                    return {
+                        **entry.data,
+                        **entry.options
+                    }
+            
+            _LOGGER.debug("Config entry not found for entry_id: %s", self.entry_id)
+            return None
+        except Exception as e:
+            _LOGGER.error("Error accessing config entry data: %s", e)
+            return None

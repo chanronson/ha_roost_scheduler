@@ -367,22 +367,14 @@ class BufferManager:
             return self.create_default_buffer_config()
     
     async def load_configuration(self) -> None:
-        """Load buffer configuration from storage."""
+        """Load buffer configuration from storage with automatic migration."""
         if not self.storage_service:
             _LOGGER.debug("No storage service available, using default configuration")
             await self._initialize_default_configuration()
             return
         
         try:
-            schedule_data = await self.storage_service.load_schedules()
-            if schedule_data and schedule_data.buffer_config:
-                self._global_buffer_config = schedule_data.buffer_config
-                # Update legacy _global_buffer for compatibility
-                self._global_buffer = self._global_buffer_config.get_effective_config("")
-                _LOGGER.debug("Loaded buffer configuration from storage")
-            else:
-                _LOGGER.info("No stored buffer configuration found, using defaults")
-                await self._initialize_default_configuration()
+            await self._detect_and_migrate_configuration()
         except Exception as e:
             _LOGGER.error("Failed to load buffer configuration: %s", e)
             await self._initialize_default_configuration()
@@ -472,3 +464,106 @@ class BufferManager:
                 _LOGGER.debug("Saved default buffer configuration to storage")
             except Exception as e:
                 _LOGGER.warning("Failed to save default buffer configuration: %s", e)
+    
+    async def _migrate_from_legacy_buffer_config(self, schedule_data) -> None:
+        """Migrate configuration from legacy buffer fields in ScheduleData."""
+        try:
+            _LOGGER.info("Migrating buffer configuration from legacy fields")
+            
+            # Extract legacy buffer configuration
+            legacy_buffer_obj = schedule_data.buffer.get('global') if schedule_data.buffer else None
+            if legacy_buffer_obj and hasattr(legacy_buffer_obj, 'to_dict'):
+                # It's a BufferConfig object, convert to dict
+                legacy_buffer = legacy_buffer_obj.to_dict()
+            elif isinstance(legacy_buffer_obj, dict):
+                # It's already a dict
+                legacy_buffer = legacy_buffer_obj
+            else:
+                # No valid buffer config found
+                legacy_buffer = {}
+            
+            # Create GlobalBufferConfig from legacy fields
+            self._global_buffer_config = GlobalBufferConfig(
+                time_minutes=legacy_buffer.get('time_minutes', DEFAULT_BUFFER_TIME_MINUTES),
+                value_delta=legacy_buffer.get('value_delta', DEFAULT_BUFFER_VALUE_DELTA),
+                enabled=legacy_buffer.get('enabled', True),
+                apply_to=legacy_buffer.get('apply_to', 'climate'),
+                entity_overrides={}  # Legacy format didn't support entity overrides
+            )
+            
+            # Update legacy _global_buffer for compatibility
+            self._global_buffer = self._global_buffer_config.get_effective_config("")
+            
+            # Save the migrated configuration
+            await self.save_configuration()
+            
+            _LOGGER.info("Successfully migrated buffer configuration from legacy fields")
+        except Exception as e:
+            _LOGGER.error("Failed to migrate buffer configuration from legacy fields: %s", e)
+            await self._initialize_default_configuration()
+    
+    async def _migrate_from_config_entry(self, config_entry_data: dict) -> None:
+        """Migrate configuration from config entry data."""
+        try:
+            _LOGGER.info("Migrating buffer configuration from config entry data")
+            
+            # Extract buffer configuration from config entry
+            buffer_time = config_entry_data.get('buffer_time_minutes', DEFAULT_BUFFER_TIME_MINUTES)
+            buffer_delta = config_entry_data.get('buffer_value_delta', DEFAULT_BUFFER_VALUE_DELTA)
+            buffer_enabled = config_entry_data.get('buffer_enabled', True)
+            
+            # Create GlobalBufferConfig from config entry data
+            self._global_buffer_config = GlobalBufferConfig(
+                time_minutes=buffer_time,
+                value_delta=buffer_delta,
+                enabled=buffer_enabled,
+                apply_to='climate',
+                entity_overrides={}
+            )
+            
+            # Update legacy _global_buffer for compatibility
+            self._global_buffer = self._global_buffer_config.get_effective_config("")
+            
+            # Save the migrated configuration
+            await self.save_configuration()
+            
+            _LOGGER.info("Successfully migrated buffer configuration from config entry")
+        except Exception as e:
+            _LOGGER.error("Failed to migrate buffer configuration from config entry: %s", e)
+            await self._initialize_default_configuration()
+    
+    async def _detect_and_migrate_configuration(self) -> None:
+        """Detect configuration version and migrate if needed."""
+        try:
+            # First try to load from storage
+            schedule_data = await self.storage_service.load_schedules()
+            
+            if schedule_data and schedule_data.buffer_config:
+                # Modern configuration exists, use it
+                self._global_buffer_config = schedule_data.buffer_config
+                # Update legacy _global_buffer for compatibility
+                self._global_buffer = self._global_buffer_config.get_effective_config("")
+                _LOGGER.debug("Loaded modern buffer configuration from storage")
+                return
+            
+            # Check for legacy buffer fields in schedule data
+            if schedule_data and schedule_data.buffer:
+                await self._migrate_from_legacy_buffer_config(schedule_data)
+                return
+            
+            # Try to migrate from config entry data
+            if hasattr(self.storage_service, 'get_config_entry_data'):
+                try:
+                    config_entry_data = self.storage_service.get_config_entry_data()
+                    if config_entry_data and ('buffer_time_minutes' in config_entry_data or 'buffer_value_delta' in config_entry_data):
+                        await self._migrate_from_config_entry(config_entry_data)
+                        return
+                except Exception as e:
+                    _LOGGER.debug("Could not access config entry data: %s", e)
+            
+            # No configuration found, initialize defaults
+            await self._initialize_default_configuration()
+            
+        except Exception as e:
+            _LOGGER.error("Error during buffer configuration detection and migration: %s", e)
+            await self._initialize_default_configuration()

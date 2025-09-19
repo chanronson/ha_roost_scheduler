@@ -11,6 +11,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.template import Template
 
 from .const import MODE_HOME, MODE_AWAY, DEFAULT_PRESENCE_TIMEOUT_SECONDS
+from .models import PresenceConfig
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -22,9 +23,10 @@ DEBUG_ENTITY_STATES = False
 class PresenceManager:
     """Manages presence detection and Home/Away mode determination."""
     
-    def __init__(self, hass: HomeAssistant) -> None:
-        """Initialize the presence manager."""
+    def __init__(self, hass: HomeAssistant, storage_service=None) -> None:
+        """Initialize the presence manager with storage integration."""
         self.hass = hass
+        self.storage_service = storage_service
         self._presence_entities: List[str] = []
         self._presence_rule = "anyone_home"
         self._timeout_seconds = DEFAULT_PRESENCE_TIMEOUT_SECONDS
@@ -38,6 +40,7 @@ class PresenceManager:
         self._initialized = False
         self._custom_template: Optional[Template] = None
         self._template_entities: List[str] = []
+        self._presence_config: Optional['PresenceConfig'] = None
     
     async def get_current_mode(self) -> str:
         """Get the current presence mode (home or away)."""
@@ -183,6 +186,9 @@ class PresenceManager:
         if self._initialized:
             return
         
+        # Load configuration from storage
+        await self.load_configuration()
+        
         # Set up state change listeners for presence entities and overrides
         await self._setup_state_listeners()
         
@@ -272,6 +278,12 @@ class PresenceManager:
         else:
             self._custom_template = None
             self._template_entities = []
+        
+        # Save configuration to storage
+        try:
+            await self.save_configuration()
+        except Exception as e:
+            _LOGGER.error("Failed to save presence configuration: %s", e)
         
         # Set up new listeners if initialized
         if self._initialized:
@@ -465,3 +477,274 @@ class PresenceManager:
             self._presence_rule = "anyone_home"  # Revert to default
         
         _LOGGER.info("Cleared custom presence template")
+    
+    async def load_configuration(self) -> None:
+        """Load presence configuration from storage with automatic migration."""
+        if not self.storage_service:
+            _LOGGER.warning("No storage service available, using default configuration")
+            await self._initialize_default_configuration()
+            return
+        
+        try:
+            await self._detect_and_migrate_configuration()
+        except Exception as e:
+            _LOGGER.error("Failed to load presence configuration: %s", e)
+            await self._initialize_default_configuration()
+    
+    async def save_configuration(self) -> None:
+        """Save presence configuration to storage."""
+        if not self.storage_service:
+            _LOGGER.warning("No storage service available, cannot save configuration")
+            return
+        
+        try:
+            # Create or update presence config
+            if not self._presence_config:
+                self._presence_config = PresenceConfig()
+            
+            # Update config with current values
+            self._presence_config.entities = self._presence_entities.copy()
+            self._presence_config.rule = self._presence_rule
+            self._presence_config.timeout_seconds = self._timeout_seconds
+            self._presence_config.override_entities = self._override_entities.copy()
+            self._presence_config.custom_template = self._custom_template.template if self._custom_template else None
+            self._presence_config.template_entities = self._template_entities.copy()
+            
+            # Load existing schedule data or create new
+            schedule_data = await self.storage_service.load_schedules()
+            if not schedule_data:
+                # Create minimal schedule data with presence config
+                from .models import ScheduleData
+                schedule_data = ScheduleData(
+                    version="0.3.0",
+                    entities_tracked=[],
+                    presence_entities=self._presence_entities.copy(),
+                    presence_rule=self._presence_rule,
+                    presence_timeout_seconds=self._timeout_seconds,
+                    buffer={},
+                    ui={},
+                    schedules={"home": {}, "away": {}},
+                    metadata={},
+                    presence_config=self._presence_config
+                )
+            else:
+                # Update existing schedule data
+                schedule_data.presence_config = self._presence_config
+                # Also update legacy fields for backward compatibility
+                schedule_data.presence_entities = self._presence_entities.copy()
+                schedule_data.presence_rule = self._presence_rule
+                schedule_data.presence_timeout_seconds = self._timeout_seconds
+            
+            await self.storage_service.save_schedules(schedule_data)
+            _LOGGER.debug("Saved presence configuration to storage")
+        except Exception as e:
+            _LOGGER.error("Failed to save presence configuration: %s", e)
+    
+    async def update_presence_entities(self, entities: List[str]) -> None:
+        """Update presence entities and persist to storage."""
+        old_entities = self._presence_entities.copy()
+        try:
+            # Validate entities
+            for entity_id in entities:
+                if not isinstance(entity_id, str) or '.' not in entity_id:
+                    raise ValueError(f"Invalid entity_id: {entity_id}")
+            
+            # Update configuration
+            self._presence_entities = entities.copy()
+            
+            # Save to storage
+            await self.save_configuration()
+            
+            # Update state listeners if initialized
+            if self._initialized:
+                await self._setup_state_listeners()
+            
+            _LOGGER.info("Updated presence entities from %s to %s", old_entities, entities)
+        except Exception as e:
+            _LOGGER.error("Failed to update presence entities: %s", e)
+            # Revert on error
+            self._presence_entities = old_entities
+            raise
+    
+    async def update_presence_rule(self, rule: str) -> None:
+        """Update presence rule and persist to storage."""
+        old_rule = self._presence_rule
+        try:
+            valid_rules = {"anyone_home", "everyone_home", "custom"}
+            if rule not in valid_rules:
+                raise ValueError(f"Invalid presence rule: {rule}. Must be one of {valid_rules}")
+            
+            self._presence_rule = rule
+            
+            # Save to storage
+            await self.save_configuration()
+            
+            _LOGGER.info("Updated presence rule from %s to %s", old_rule, rule)
+        except Exception as e:
+            _LOGGER.error("Failed to update presence rule: %s", e)
+            # Revert on error
+            self._presence_rule = old_rule
+            raise
+    
+    def get_configuration_summary(self) -> Dict[str, Any]:
+        """Get current configuration for diagnostics."""
+        return {
+            "presence_entities": self._presence_entities.copy(),
+            "presence_rule": self._presence_rule,
+            "timeout_seconds": self._timeout_seconds,
+            "override_entities": self._override_entities.copy(),
+            "custom_template": self._custom_template.template if self._custom_template else None,
+            "template_entities": self._template_entities.copy(),
+            "current_mode": self._current_mode,
+            "initialized": self._initialized,
+            "storage_service_available": self.storage_service is not None,
+            "presence_config_loaded": self._presence_config is not None
+        }
+    
+    def _load_from_presence_config(self, config: PresenceConfig) -> None:
+        """Load configuration from PresenceConfig object."""
+        try:
+            self._presence_entities = config.entities.copy()
+            self._presence_rule = config.rule
+            self._timeout_seconds = config.timeout_seconds
+            self._override_entities = config.override_entities.copy()
+            self._template_entities = config.template_entities.copy()
+            
+            # Set up custom template if present
+            if config.custom_template:
+                try:
+                    self._custom_template = Template(config.custom_template, self.hass)
+                except Exception as e:
+                    _LOGGER.error("Failed to load custom template: %s", e)
+                    self._custom_template = None
+            else:
+                self._custom_template = None
+            
+            _LOGGER.debug("Loaded configuration from PresenceConfig")
+        except Exception as e:
+            _LOGGER.error("Error loading from PresenceConfig: %s", e)
+            raise
+    
+    async def _migrate_from_legacy_fields(self, schedule_data) -> None:
+        """Migrate configuration from legacy fields in ScheduleData."""
+        try:
+            _LOGGER.info("Migrating presence configuration from legacy fields")
+            
+            # Create PresenceConfig from legacy fields
+            self._presence_config = PresenceConfig(
+                entities=schedule_data.presence_entities.copy() if schedule_data.presence_entities else [],
+                rule=schedule_data.presence_rule if schedule_data.presence_rule else "anyone_home",
+                timeout_seconds=schedule_data.presence_timeout_seconds if schedule_data.presence_timeout_seconds else DEFAULT_PRESENCE_TIMEOUT_SECONDS,
+                override_entities={
+                    "force_home": "input_boolean.roost_force_home",
+                    "force_away": "input_boolean.roost_force_away"
+                },
+                custom_template=None,
+                template_entities=[]
+            )
+            
+            # Load the migrated configuration
+            self._load_from_presence_config(self._presence_config)
+            
+            # Save the migrated configuration
+            await self.save_configuration()
+            
+            _LOGGER.info("Successfully migrated presence configuration")
+        except Exception as e:
+            _LOGGER.error("Failed to migrate presence configuration: %s", e)
+            await self._initialize_default_configuration()
+    
+    async def _migrate_from_config_entry(self, config_entry_data: dict) -> None:
+        """Migrate configuration from config entry data."""
+        try:
+            _LOGGER.info("Migrating presence configuration from config entry data")
+            
+            # Extract presence configuration from config entry
+            presence_entities = config_entry_data.get('presence_entities', [])
+            presence_rule = config_entry_data.get('presence_rule', 'anyone_home')
+            presence_timeout = config_entry_data.get('presence_timeout_seconds', DEFAULT_PRESENCE_TIMEOUT_SECONDS)
+            
+            # Create PresenceConfig from config entry data
+            self._presence_config = PresenceConfig(
+                entities=presence_entities.copy() if presence_entities else [],
+                rule=presence_rule,
+                timeout_seconds=presence_timeout,
+                override_entities={
+                    "force_home": "input_boolean.roost_force_home",
+                    "force_away": "input_boolean.roost_force_away"
+                },
+                custom_template=None,
+                template_entities=[]
+            )
+            
+            # Load the migrated configuration
+            self._load_from_presence_config(self._presence_config)
+            
+            # Save the migrated configuration
+            await self.save_configuration()
+            
+            _LOGGER.info("Successfully migrated presence configuration from config entry")
+        except Exception as e:
+            _LOGGER.error("Failed to migrate presence configuration from config entry: %s", e)
+            await self._initialize_default_configuration()
+    
+    async def _detect_and_migrate_configuration(self) -> None:
+        """Detect configuration version and migrate if needed."""
+        try:
+            # First try to load from storage
+            schedule_data = await self.storage_service.load_schedules()
+            
+            if schedule_data and schedule_data.presence_config:
+                # Modern configuration exists, use it
+                self._presence_config = schedule_data.presence_config
+                self._load_from_presence_config(schedule_data.presence_config)
+                _LOGGER.debug("Loaded modern presence configuration from storage")
+                return
+            
+            # Check for legacy fields in schedule data
+            if schedule_data and (schedule_data.presence_entities or schedule_data.presence_rule):
+                await self._migrate_from_legacy_fields(schedule_data)
+                return
+            
+            # Try to migrate from config entry data
+            if hasattr(self.storage_service, 'get_config_entry_data'):
+                try:
+                    config_entry_data = self.storage_service.get_config_entry_data()
+                    if config_entry_data and ('presence_entities' in config_entry_data or 'presence_rule' in config_entry_data):
+                        await self._migrate_from_config_entry(config_entry_data)
+                        return
+                except Exception as e:
+                    _LOGGER.debug("Could not access config entry data: %s", e)
+            
+            # No configuration found, initialize defaults
+            await self._initialize_default_configuration()
+            
+        except Exception as e:
+            _LOGGER.error("Error during configuration detection and migration: %s", e)
+            await self._initialize_default_configuration()
+    
+    async def _initialize_default_configuration(self) -> None:
+        """Initialize with default configuration."""
+        try:
+            self._presence_config = PresenceConfig()
+            self._presence_entities = []
+            self._presence_rule = "anyone_home"
+            self._timeout_seconds = DEFAULT_PRESENCE_TIMEOUT_SECONDS
+            self._override_entities = {
+                "force_home": "input_boolean.roost_force_home",
+                "force_away": "input_boolean.roost_force_away"
+            }
+            self._custom_template = None
+            self._template_entities = []
+            
+            _LOGGER.info("Initialized default presence configuration")
+            
+            # Try to save default configuration if storage is available
+            if self.storage_service:
+                try:
+                    await self.save_configuration()
+                except Exception as e:
+                    _LOGGER.warning("Could not save default configuration: %s", e)
+        except Exception as e:
+            _LOGGER.error("Failed to initialize default configuration: %s", e)
+            raise
