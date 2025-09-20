@@ -16,6 +16,15 @@
           "presence_rule": "Presence Rule"
         }
       },
+      "buffer": {
+        "title": "Buffer Configuration",
+        "description": "Configure intelligent buffering to avoid conflicts with manual changes.",
+        "data": {
+          "buffer_enabled": "Enable Buffer",
+          "buffer_time_minutes": "Buffer Time (minutes)",
+          "buffer_value_delta": "Buffer Value Delta (°C)"
+        }
+      },
       "card": {
         "title": "Lovelace Card",
         "description": "Would you like to add the scheduler card to your dashboard?",
@@ -30,7 +39,10 @@
       "at_least_one_entity": "Please select at least one climate entity.",
       "entity_not_found": "One or more selected entities could not be found.",
       "unsupported_climate_entity": "One or more selected climate entities do not support temperature control.",
-      "unsupported_presence_entity": "One or more selected presence entities are not supported."
+      "unsupported_presence_entity": "One or more selected presence entities are not supported.",
+      "invalid_boolean": "Invalid boolean value.",
+      "invalid_time_range": "Buffer time must be between 0 and 1440 minutes (24 hours).",
+      "invalid_delta_range": "Buffer value delta must be between 0.1 and 10.0 degrees."
     },
     "abort": {
       "already_configured": "This integration is already configured.",

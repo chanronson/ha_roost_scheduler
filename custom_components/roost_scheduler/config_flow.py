@@ -14,7 +14,11 @@ from homeassistant.const import ATTR_SUPPORTED_FEATURES
 from homeassistant.components import frontend
 from homeassistant.helpers.storage import Store
 
-from .const import DOMAIN, NAME, DEFAULT_PRESENCE_RULE
+from .const import DOMAIN, NAME, DEFAULT_PRESENCE_RULE, DEFAULT_BUFFER_TIME_MINUTES, DEFAULT_BUFFER_VALUE_DELTA
+from .storage import StorageService
+from .models import PresenceConfig, GlobalBufferConfig, ScheduleData
+from .presence_manager import PresenceManager
+from .buffer_manager import BufferManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,6 +36,9 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._add_card = False
         self._selected_dashboard: str | None = None
         self._selected_view: str | None = None
+        self._buffer_time_minutes: int = DEFAULT_BUFFER_TIME_MINUTES
+        self._buffer_value_delta: float = DEFAULT_BUFFER_VALUE_DELTA
+        self._buffer_enabled: bool = True
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None
@@ -94,11 +101,11 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 else:
                     self._presence_entities = presence_entities
                     self._presence_rule = presence_rule
-                    return await self.async_step_card()
+                    return await self.async_step_buffer()
             else:
                 self._presence_entities = []
                 self._presence_rule = presence_rule
-                return await self.async_step_card()
+                return await self.async_step_buffer()
 
         # Get available presence entities
         presence_entities = await self._get_presence_entities()
@@ -129,6 +136,58 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"name": NAME}
         )
 
+    async def async_step_buffer(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Handle buffer configuration step."""
+        errors: Dict[str, str] = {}
+
+        if user_input is not None:
+            buffer_enabled = user_input.get("buffer_enabled", True)
+            buffer_time_minutes = user_input.get("buffer_time_minutes", DEFAULT_BUFFER_TIME_MINUTES)
+            buffer_value_delta = user_input.get("buffer_value_delta", DEFAULT_BUFFER_VALUE_DELTA)
+            
+            # Validate buffer settings
+            validation_errors = await self._validate_buffer_settings(
+                buffer_enabled, buffer_time_minutes, buffer_value_delta
+            )
+            if validation_errors:
+                errors.update(validation_errors)
+            else:
+                self._buffer_enabled = buffer_enabled
+                self._buffer_time_minutes = buffer_time_minutes
+                self._buffer_value_delta = buffer_value_delta
+                return await self.async_step_card()
+
+        data_schema = vol.Schema({
+            vol.Optional("buffer_enabled", default=True): selector.BooleanSelector(),
+            vol.Optional("buffer_time_minutes", default=DEFAULT_BUFFER_TIME_MINUTES): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0,
+                    max=1440,  # 24 hours
+                    step=1,
+                    mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="minutes"
+                )
+            ),
+            vol.Optional("buffer_value_delta", default=DEFAULT_BUFFER_VALUE_DELTA): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0.1,
+                    max=10.0,
+                    step=0.1,
+                    mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="°C"
+                )
+            )
+        })
+
+        return self.async_show_form(
+            step_id="buffer",
+            data_schema=data_schema,
+            errors=errors,
+            description_placeholders={"name": NAME}
+        )
+
     async def async_step_card(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
@@ -149,18 +208,27 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         _LOGGER.error("Failed to install Lovelace card: %s", err)
                         # Continue anyway - card installation is optional
             
-            # Create the config entry
-            return self.async_create_entry(
-                title=NAME,
-                data={
-                    "entities": self._entities,
-                    "presence_entities": self._presence_entities,
-                    "presence_rule": getattr(self, '_presence_rule', DEFAULT_PRESENCE_RULE),
-                    "add_card": self._add_card,
-                    "dashboard": self._selected_dashboard,
-                    "view": self._selected_view
-                }
-            )
+            # Create the config entry with enhanced configuration
+            config_data = {
+                "entities": self._entities,
+                "presence_entities": self._presence_entities,
+                "presence_rule": getattr(self, '_presence_rule', DEFAULT_PRESENCE_RULE),
+                "buffer_enabled": getattr(self, '_buffer_enabled', True),
+                "buffer_time_minutes": getattr(self, '_buffer_time_minutes', DEFAULT_BUFFER_TIME_MINUTES),
+                "buffer_value_delta": getattr(self, '_buffer_value_delta', DEFAULT_BUFFER_VALUE_DELTA),
+                "add_card": self._add_card,
+                "dashboard": self._selected_dashboard,
+                "view": self._selected_view
+            }
+            
+            # Try to validate manager initialization with the configuration
+            try:
+                await self._validate_manager_initialization(config_data)
+            except Exception as err:
+                _LOGGER.error("Failed to validate manager initialization: %s", err)
+                # Continue anyway - this validation is optional and managers will be initialized during integration setup
+            
+            return self.async_create_entry(title=NAME, data=config_data)
 
         # Get available dashboards and views
         dashboards = await self._get_dashboards()
@@ -299,6 +367,65 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 break
         
         return errors
+
+    async def _validate_buffer_settings(self, enabled: bool, time_minutes: int, value_delta: float) -> dict[str, str]:
+        """Validate buffer configuration settings."""
+        errors = {}
+        
+        if not isinstance(enabled, bool):
+            errors["buffer_enabled"] = "invalid_boolean"
+        
+        if not isinstance(time_minutes, int) or time_minutes < 0 or time_minutes > 1440:
+            errors["buffer_time_minutes"] = "invalid_time_range"
+        
+        if not isinstance(value_delta, (int, float)) or value_delta < 0.1 or value_delta > 10.0:
+            errors["buffer_value_delta"] = "invalid_delta_range"
+        
+        return errors
+
+    async def _validate_manager_initialization(self, config_data: Dict[str, Any]) -> None:
+        """Validate that managers can be initialized with the provided configuration."""
+        try:
+            # Create a temporary entry ID for validation
+            temp_entry_id = "config_flow_validation"
+            
+            # Initialize storage service
+            storage_service = StorageService(self.hass, temp_entry_id)
+            
+            # Test manager initialization to validate configuration
+            try:
+                presence_manager = PresenceManager(self.hass, storage_service)
+                buffer_manager = BufferManager(self.hass, storage_service)
+                
+                # Test loading configuration (will use defaults if none exists)
+                await presence_manager.load_configuration()
+                await buffer_manager.load_configuration()
+                
+                # Test updating configuration with config flow values
+                if config_data.get("presence_entities"):
+                    await presence_manager.update_presence_entities(config_data["presence_entities"])
+                
+                if config_data.get("presence_rule"):
+                    await presence_manager.update_presence_rule(config_data["presence_rule"])
+                
+                # Test buffer configuration
+                from .models import BufferConfig
+                test_buffer_config = BufferConfig(
+                    time_minutes=config_data.get("buffer_time_minutes", DEFAULT_BUFFER_TIME_MINUTES),
+                    value_delta=config_data.get("buffer_value_delta", DEFAULT_BUFFER_VALUE_DELTA),
+                    enabled=config_data.get("buffer_enabled", True),
+                    apply_to="climate"
+                )
+                
+                _LOGGER.info("Successfully validated manager initialization during config flow")
+                
+            except Exception as manager_err:
+                _LOGGER.error("Manager initialization validation failed: %s", manager_err)
+                raise
+            
+        except Exception as e:
+            _LOGGER.error("Failed to validate manager initialization: %s", e)
+            raise
 
     async def _get_dashboards(self) -> list[dict[str, str]]:
         """Get available Lovelace dashboards."""
