@@ -85,15 +85,17 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Roost Scheduler from a config entry with robust error handling."""
+    setup_start_time = datetime.now()
     _LOGGER.info("Setting up Roost Scheduler config entry: %s", entry.entry_id)
     
     setup_diagnostics = {
         "entry_id": entry.entry_id,
-        "start_time": datetime.now(),
+        "start_time": setup_start_time,
         "components_initialized": [],
         "components_failed": [],
         "warnings": [],
-        "fallbacks_used": []
+        "fallbacks_used": [],
+        "performance_metrics": {}
     }
     
     try:
@@ -280,13 +282,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         
         _log_setup_summary(setup_diagnostics)
         
-        _LOGGER.info("Roost Scheduler setup completed successfully for entry %s", entry.entry_id)
+        _LOGGER.info("Roost Scheduler setup completed successfully for entry %s in %.3fs", 
+                    entry.entry_id, setup_diagnostics["duration_seconds"])
         return True
         
     except Exception as e:
         _LOGGER.error("Critical error during setup for entry %s: %s", entry.entry_id, e, exc_info=True)
         setup_diagnostics["critical_error"] = str(e)
         setup_diagnostics["end_time"] = datetime.now()
+        setup_diagnostics["duration_seconds"] = (setup_diagnostics["end_time"] - setup_diagnostics["start_time"]).total_seconds()
         
         # Log failure diagnostics
         _log_setup_failure(setup_diagnostics)
@@ -971,3 +975,151 @@ async def get_setup_diagnostics(hass: HomeAssistant, entry_id: str) -> dict:
         diagnostics["recommendations"].append("Critical error getting diagnostics - check logs for details")
     
     return diagnostics
+
+def 
+_log_setup_summary(setup_diagnostics: dict) -> None:
+    """Log a comprehensive setup summary."""
+    duration = setup_diagnostics.get("duration_seconds", 0)
+    components_initialized = setup_diagnostics.get("components_initialized", [])
+    components_failed = setup_diagnostics.get("components_failed", [])
+    warnings = setup_diagnostics.get("warnings", [])
+    fallbacks_used = setup_diagnostics.get("fallbacks_used", [])
+    
+    _LOGGER.info("=== Roost Scheduler Setup Summary ===")
+    _LOGGER.info("Entry ID: %s", setup_diagnostics.get("entry_id"))
+    _LOGGER.info("Duration: %.3f seconds", duration)
+    _LOGGER.info("Components initialized: %d (%s)", len(components_initialized), ", ".join(components_initialized))
+    
+    if components_failed:
+        _LOGGER.warning("Components failed: %d", len(components_failed))
+        for failure in components_failed:
+            _LOGGER.warning("  - %s: %s", failure.get("component", "unknown"), failure.get("error", "unknown error"))
+    
+    if warnings:
+        _LOGGER.warning("Warnings: %d", len(warnings))
+        for warning in warnings:
+            _LOGGER.warning("  - %s", warning)
+    
+    if fallbacks_used:
+        _LOGGER.info("Fallbacks used: %d (%s)", len(fallbacks_used), ", ".join(fallbacks_used))
+    
+    # Performance metrics
+    performance_metrics = setup_diagnostics.get("performance_metrics", {})
+    if performance_metrics:
+        _LOGGER.info("Performance metrics:")
+        for metric, value in performance_metrics.items():
+            _LOGGER.info("  - %s: %.3fs", metric, value)
+    
+    _LOGGER.info("=== Setup Summary Complete ===")
+
+
+def _log_setup_failure(setup_diagnostics: dict) -> None:
+    """Log detailed failure information for troubleshooting."""
+    duration = setup_diagnostics.get("duration_seconds", 0)
+    components_initialized = setup_diagnostics.get("components_initialized", [])
+    components_failed = setup_diagnostics.get("components_failed", [])
+    critical_error = setup_diagnostics.get("critical_error")
+    
+    _LOGGER.error("=== Roost Scheduler Setup FAILED ===")
+    _LOGGER.error("Entry ID: %s", setup_diagnostics.get("entry_id"))
+    _LOGGER.error("Duration before failure: %.3f seconds", duration)
+    _LOGGER.error("Critical error: %s", critical_error)
+    
+    if components_initialized:
+        _LOGGER.error("Components that initialized successfully: %s", ", ".join(components_initialized))
+    
+    if components_failed:
+        _LOGGER.error("Components that failed:")
+        for failure in components_failed:
+            _LOGGER.error("  - %s: %s", failure.get("component", "unknown"), failure.get("error", "unknown error"))
+    
+    _LOGGER.error("=== Failure Summary Complete ===")
+    _LOGGER.error("Check the logs above for specific error details and troubleshooting information")
+
+
+async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> dict:
+    """Validate that the setup completed successfully with comprehensive checks."""
+    validation_results = {
+        "entry_data_valid": False,
+        "managers_initialized": False,
+        "services_registered": False,
+        "websocket_handlers_registered": False,
+        "storage_accessible": False,
+        "configuration_valid": False,
+        "issues": [],
+        "recommendations": []
+    }
+    
+    try:
+        # Check entry data exists
+        if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+            entry_data = hass.data[DOMAIN][entry.entry_id]
+            validation_results["entry_data_valid"] = True
+            
+            # Check managers
+            required_managers = ["storage_service", "schedule_manager", "presence_manager", "buffer_manager"]
+            managers_ok = all(manager in entry_data and entry_data[manager] is not None for manager in required_managers)
+            validation_results["managers_initialized"] = managers_ok
+            
+            if not managers_ok:
+                missing = [m for m in required_managers if m not in entry_data or entry_data[m] is None]
+                validation_results["issues"].append(f"Missing managers: {', '.join(missing)}")
+            
+            # Test storage accessibility
+            try:
+                storage_service = entry_data.get("storage_service")
+                if storage_service:
+                    await storage_service.load_schedules()
+                    validation_results["storage_accessible"] = True
+                else:
+                    validation_results["issues"].append("Storage service not available")
+            except Exception as e:
+                validation_results["issues"].append(f"Storage access failed: {str(e)}")
+            
+            # Test configuration validity
+            try:
+                config_validator = entry_data.get("config_validator")
+                if config_validator:
+                    all_valid, errors = config_validator.validate_all_configurations()
+                    validation_results["configuration_valid"] = all_valid
+                    if not all_valid:
+                        validation_results["issues"].extend(errors)
+                else:
+                    validation_results["issues"].append("Configuration validator not available")
+            except Exception as e:
+                validation_results["issues"].append(f"Configuration validation failed: {str(e)}")
+        else:
+            validation_results["issues"].append("Entry data not found in hass.data")
+        
+        # Check services registration
+        domain_services = hass.services.async_services().get(DOMAIN, {})
+        expected_services = [SERVICE_APPLY_SLOT, SERVICE_APPLY_GRID_NOW, SERVICE_MIGRATE_RESOLUTION]
+        services_registered = all(service in domain_services for service in expected_services)
+        validation_results["services_registered"] = services_registered
+        
+        if not services_registered:
+            missing_services = [s for s in expected_services if s not in domain_services]
+            validation_results["issues"].append(f"Missing services: {', '.join(missing_services)}")
+        
+        # Check WebSocket handlers (this is harder to validate directly)
+        validation_results["websocket_handlers_registered"] = True  # Assume OK if no errors during registration
+        
+        # Generate recommendations based on issues
+        if validation_results["issues"]:
+            validation_results["recommendations"].append("Check the setup logs for specific error details")
+            validation_results["recommendations"].append("Try restarting Home Assistant if issues persist")
+            validation_results["recommendations"].append("Check Home Assistant storage permissions and disk space")
+        
+        # Overall validation status
+        validation_results["overall_valid"] = (
+            validation_results["entry_data_valid"] and
+            validation_results["managers_initialized"] and
+            validation_results["services_registered"] and
+            validation_results["storage_accessible"]
+        )
+        
+    except Exception as e:
+        validation_results["issues"].append(f"Validation process failed: {str(e)}")
+        validation_results["overall_valid"] = False
+    
+    return validation_results

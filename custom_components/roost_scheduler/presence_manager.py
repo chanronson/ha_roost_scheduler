@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Callable, List, Optional, Dict, Any
 
@@ -18,6 +19,9 @@ _LOGGER = logging.getLogger(__name__)
 # Debug logging flags
 DEBUG_PRESENCE_EVALUATION = False
 DEBUG_ENTITY_STATES = False
+
+# Performance monitoring
+PERFORMANCE_MONITORING = False
 
 
 class PresenceManager:
@@ -183,20 +187,58 @@ class PresenceManager:
     
     async def async_initialize(self) -> None:
         """Initialize the presence manager with state tracking."""
+        start_time = time.time()
+        
         if self._initialized:
+            _LOGGER.debug("PresenceManager already initialized, skipping")
             return
         
-        # Load configuration from storage
-        await self.load_configuration()
+        _LOGGER.info("Initializing PresenceManager...")
         
-        # Set up state change listeners for presence entities and overrides
-        await self._setup_state_listeners()
-        
-        # Get initial mode
-        self._current_mode = await self.get_current_mode()
-        self._initialized = True
-        
-        _LOGGER.info("PresenceManager initialized with mode: %s", self._current_mode)
+        try:
+            # Load configuration from storage
+            config_start = time.time()
+            await self.load_configuration()
+            config_duration = time.time() - config_start
+            
+            if PERFORMANCE_MONITORING:
+                _LOGGER.info("PERF: PresenceManager configuration loading completed in %.3fs", config_duration)
+            
+            # Set up state change listeners for presence entities and overrides
+            listener_start = time.time()
+            await self._setup_state_listeners()
+            listener_duration = time.time() - listener_start
+            
+            if PERFORMANCE_MONITORING:
+                _LOGGER.info("PERF: PresenceManager state listeners setup completed in %.3fs", listener_duration)
+            
+            # Get initial mode
+            mode_start = time.time()
+            self._current_mode = await self.get_current_mode()
+            mode_duration = time.time() - mode_start
+            
+            if PERFORMANCE_MONITORING:
+                _LOGGER.info("PERF: PresenceManager initial mode evaluation completed in %.3fs", mode_duration)
+            
+            self._initialized = True
+            
+            total_duration = time.time() - start_time
+            _LOGGER.info("PresenceManager initialized successfully with mode: %s (total time: %.3fs)", 
+                        self._current_mode, total_duration)
+            
+            # Log configuration summary
+            config_summary = self.get_configuration_summary()
+            _LOGGER.info("PresenceManager configuration: entities=%d, rule=%s, timeout=%ds, template=%s", 
+                        len(config_summary['presence_entities']), 
+                        config_summary['presence_rule'],
+                        config_summary['timeout_seconds'],
+                        bool(config_summary['custom_template']))
+            
+        except Exception as e:
+            _LOGGER.error("Failed to initialize PresenceManager: %s", e, exc_info=True)
+            # Set minimal state to prevent complete failure
+            self._initialized = False
+            raise
     
     async def _setup_state_listeners(self) -> None:
         """Set up state change listeners for presence entities and overrides."""
@@ -480,6 +522,9 @@ class PresenceManager:
     
     async def load_configuration(self) -> None:
         """Load presence configuration from storage with automatic migration."""
+        start_time = time.time()
+        _LOGGER.debug("Loading presence configuration from storage...")
+        
         if not self.storage_service:
             _LOGGER.warning("No storage service available, using default configuration")
             await self._initialize_default_configuration()
@@ -487,12 +532,25 @@ class PresenceManager:
         
         try:
             await self._detect_and_migrate_configuration()
+            duration = time.time() - start_time
+            
+            _LOGGER.info("Presence configuration loaded successfully in %.3fs", duration)
+            self.log_performance_metric("load_configuration", duration)
+            
+            # Log configuration details
+            _LOGGER.debug("Loaded presence configuration: entities=%d, rule=%s, timeout=%ds", 
+                         len(self._presence_entities), self._presence_rule, self._timeout_seconds)
+            
         except Exception as e:
-            _LOGGER.error("Failed to load presence configuration: %s", e)
+            duration = time.time() - start_time
+            _LOGGER.error("Failed to load presence configuration after %.3fs: %s", duration, e, exc_info=True)
             await self._initialize_default_configuration()
     
     async def save_configuration(self) -> None:
         """Save presence configuration to storage."""
+        start_time = time.time()
+        _LOGGER.debug("Saving presence configuration to storage...")
+        
         if not self.storage_service:
             _LOGGER.warning("No storage service available, cannot save configuration")
             return
@@ -501,6 +559,7 @@ class PresenceManager:
             # Create or update presence config
             if not self._presence_config:
                 self._presence_config = PresenceConfig()
+                _LOGGER.debug("Created new PresenceConfig instance")
             
             # Update config with current values
             self._presence_config.entities = self._presence_entities.copy()
@@ -510,9 +569,16 @@ class PresenceManager:
             self._presence_config.custom_template = self._custom_template.template if self._custom_template else None
             self._presence_config.template_entities = self._template_entities.copy()
             
+            _LOGGER.debug("Updated PresenceConfig with current values: entities=%d, rule=%s", 
+                         len(self._presence_entities), self._presence_rule)
+            
             # Load existing schedule data or create new
+            load_start = time.time()
             schedule_data = await self.storage_service.load_schedules()
+            load_duration = time.time() - load_start
+            
             if not schedule_data:
+                _LOGGER.debug("No existing schedule data, creating new ScheduleData")
                 # Create minimal schedule data with presence config
                 from .models import ScheduleData
                 schedule_data = ScheduleData(
@@ -528,6 +594,7 @@ class PresenceManager:
                     presence_config=self._presence_config
                 )
             else:
+                _LOGGER.debug("Updating existing schedule data with presence configuration")
                 # Update existing schedule data
                 schedule_data.presence_config = self._presence_config
                 # Also update legacy fields for backward compatibility
@@ -535,10 +602,19 @@ class PresenceManager:
                 schedule_data.presence_rule = self._presence_rule
                 schedule_data.presence_timeout_seconds = self._timeout_seconds
             
+            save_start = time.time()
             await self.storage_service.save_schedules(schedule_data)
-            _LOGGER.debug("Saved presence configuration to storage")
+            save_duration = time.time() - save_start
+            
+            total_duration = time.time() - start_time
+            _LOGGER.info("Presence configuration saved successfully in %.3fs (load: %.3fs, save: %.3fs)", 
+                        total_duration, load_duration, save_duration)
+            self.log_performance_metric("save_configuration", total_duration, 
+                                      load_time=load_duration, save_time=save_duration)
+            
         except Exception as e:
-            _LOGGER.error("Failed to save presence configuration: %s", e)
+            duration = time.time() - start_time
+            _LOGGER.error("Failed to save presence configuration after %.3fs: %s", duration, e, exc_info=True)
     
     async def update_presence_entities(self, entities: List[str]) -> None:
         """Update presence entities and persist to storage."""
@@ -600,6 +676,201 @@ class PresenceManager:
             "storage_service_available": self.storage_service is not None,
             "presence_config_loaded": self._presence_config is not None
         }
+    
+    def get_diagnostic_info(self) -> Dict[str, Any]:
+        """Get comprehensive diagnostic information for troubleshooting."""
+        diagnostic_info = {
+            "manager_status": {
+                "initialized": self._initialized,
+                "current_mode": self._current_mode,
+                "storage_available": self.storage_service is not None,
+                "config_loaded": self._presence_config is not None,
+                "listeners_count": len(self._state_listeners),
+                "callbacks_count": len(self._mode_change_callbacks)
+            },
+            "configuration": self.get_configuration_summary(),
+            "entity_states": {},
+            "override_states": {},
+            "validation_results": {},
+            "performance_metrics": {},
+            "troubleshooting": {
+                "common_issues": [],
+                "recommendations": []
+            }
+        }
+        
+        # Get detailed entity states
+        for entity_id in self._presence_entities:
+            state = self.hass.states.get(entity_id)
+            if state:
+                diagnostic_info["entity_states"][entity_id] = {
+                    "state": state.state,
+                    "domain": state.domain,
+                    "is_home": self._is_entity_home(state),
+                    "is_stale": self.is_entity_stale(entity_id),
+                    "last_updated": state.last_updated.isoformat() if state.last_updated else None,
+                    "last_changed": state.last_changed.isoformat() if state.last_changed else None,
+                    "attributes": dict(state.attributes) if state.attributes else {}
+                }
+            else:
+                diagnostic_info["entity_states"][entity_id] = {
+                    "state": "not_found",
+                    "error": "Entity not found in Home Assistant"
+                }
+        
+        # Get override entity states
+        for override_type, entity_id in self._override_entities.items():
+            state = self.hass.states.get(entity_id)
+            if state:
+                diagnostic_info["override_states"][override_type] = {
+                    "entity_id": entity_id,
+                    "state": state.state,
+                    "active": state.state == "on",
+                    "last_updated": state.last_updated.isoformat() if state.last_updated else None
+                }
+            else:
+                diagnostic_info["override_states"][override_type] = {
+                    "entity_id": entity_id,
+                    "state": "not_found",
+                    "error": "Override entity not found in Home Assistant"
+                }
+        
+        # Run validation
+        is_valid, errors = self.validate_configuration()
+        diagnostic_info["validation_results"] = {
+            "is_valid": is_valid,
+            "errors": errors
+        }
+        
+        # Add troubleshooting information
+        diagnostic_info["troubleshooting"] = self._generate_troubleshooting_info(diagnostic_info)
+        
+        return diagnostic_info
+    
+    def _generate_troubleshooting_info(self, diagnostic_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate troubleshooting information based on diagnostic data."""
+        issues = []
+        recommendations = []
+        
+        # Check for common issues
+        if not diagnostic_info["manager_status"]["initialized"]:
+            issues.append("PresenceManager is not initialized")
+            recommendations.append("Check logs for initialization errors and restart the integration")
+        
+        if not diagnostic_info["manager_status"]["storage_available"]:
+            issues.append("Storage service is not available")
+            recommendations.append("Check Home Assistant storage permissions and disk space")
+        
+        if not diagnostic_info["configuration"]["presence_entities"]:
+            issues.append("No presence entities configured")
+            recommendations.append("Configure at least one presence entity (device_tracker, person, etc.)")
+        
+        # Check entity states
+        missing_entities = []
+        stale_entities = []
+        for entity_id, entity_info in diagnostic_info["entity_states"].items():
+            if entity_info.get("state") == "not_found":
+                missing_entities.append(entity_id)
+            elif entity_info.get("is_stale"):
+                stale_entities.append(entity_id)
+        
+        if missing_entities:
+            issues.append(f"Presence entities not found: {', '.join(missing_entities)}")
+            recommendations.append("Remove non-existent entities or ensure they are properly configured")
+        
+        if stale_entities:
+            issues.append(f"Stale presence entities (not updated recently): {', '.join(stale_entities)}")
+            recommendations.append(f"Check if these entities are working properly or increase timeout from {diagnostic_info['configuration']['timeout_seconds']}s")
+        
+        # Check override entities
+        missing_overrides = []
+        for override_type, override_info in diagnostic_info["override_states"].items():
+            if override_info.get("state") == "not_found":
+                missing_overrides.append(f"{override_type}: {override_info['entity_id']}")
+        
+        if missing_overrides:
+            issues.append(f"Override entities not found: {', '.join(missing_overrides)}")
+            recommendations.append("Create the missing input_boolean entities or update override configuration")
+        
+        # Check validation errors
+        if not diagnostic_info["validation_results"]["is_valid"]:
+            issues.extend(diagnostic_info["validation_results"]["errors"])
+            recommendations.append("Fix configuration validation errors listed above")
+        
+        # Check for template issues
+        if diagnostic_info["configuration"]["custom_template"]:
+            try:
+                if self._custom_template:
+                    self._custom_template.async_render()
+            except Exception as e:
+                issues.append(f"Custom template error: {e}")
+                recommendations.append("Fix the custom template syntax or remove it to use standard rules")
+        
+        return {
+            "common_issues": issues,
+            "recommendations": recommendations,
+            "health_score": max(0, 100 - len(issues) * 10),  # Simple health scoring
+            "last_check": datetime.now().isoformat()
+        }
+    
+    def log_performance_metric(self, operation: str, duration_seconds: float, **kwargs) -> None:
+        """Log performance metrics if monitoring is enabled."""
+        if not PERFORMANCE_MONITORING:
+            return
+        
+        extra_info = ""
+        for key, value in kwargs.items():
+            extra_info += f" {key}={value}"
+        
+        _LOGGER.info("PERF: PresenceManager.%s completed in %.3fs%s", operation, duration_seconds, extra_info)
+    
+    async def run_diagnostics(self) -> Dict[str, Any]:
+        """Run comprehensive diagnostics and return results."""
+        _LOGGER.info("Running PresenceManager diagnostics...")
+        
+        start_time = time.time()
+        diagnostic_info = self.get_diagnostic_info()
+        
+        # Test presence evaluation
+        try:
+            eval_start = time.time()
+            current_mode = await self.get_current_mode()
+            eval_duration = time.time() - eval_start
+            
+            diagnostic_info["performance_metrics"]["presence_evaluation"] = {
+                "duration_seconds": eval_duration,
+                "result": current_mode,
+                "timestamp": datetime.now().isoformat()
+            }
+        except Exception as e:
+            diagnostic_info["performance_metrics"]["presence_evaluation"] = {
+                "error": str(e),
+                "timestamp": datetime.now().isoformat()
+            }
+        
+        # Test configuration loading
+        if self.storage_service:
+            try:
+                load_start = time.time()
+                await self.load_configuration()
+                load_duration = time.time() - load_start
+                
+                diagnostic_info["performance_metrics"]["configuration_loading"] = {
+                    "duration_seconds": load_duration,
+                    "timestamp": datetime.now().isoformat()
+                }
+            except Exception as e:
+                diagnostic_info["performance_metrics"]["configuration_loading"] = {
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
+        
+        total_duration = time.time() - start_time
+        diagnostic_info["performance_metrics"]["total_diagnostic_time"] = total_duration
+        
+        _LOGGER.info("PresenceManager diagnostics completed in %.3fs", total_duration)
+        
+        return diagnostic_info
     
     def validate_configuration(self) -> tuple[bool, List[str]]:
         """

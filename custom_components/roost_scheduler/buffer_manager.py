@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
@@ -15,6 +16,9 @@ _LOGGER = logging.getLogger(__name__)
 # Debug logging flags
 DEBUG_BUFFER_LOGIC = False
 DEBUG_MANUAL_CHANGES = False
+
+# Performance monitoring
+PERFORMANCE_MONITORING = False
 
 
 class BufferManager:
@@ -368,6 +372,9 @@ class BufferManager:
     
     async def load_configuration(self) -> None:
         """Load buffer configuration from storage with automatic migration."""
+        start_time = time.time()
+        _LOGGER.debug("Loading buffer configuration from storage...")
+        
         if not self.storage_service:
             _LOGGER.debug("No storage service available, using default configuration")
             await self._initialize_default_configuration()
@@ -375,27 +382,59 @@ class BufferManager:
         
         try:
             await self._detect_and_migrate_configuration()
+            duration = time.time() - start_time
+            
+            _LOGGER.info("Buffer configuration loaded successfully in %.3fs", duration)
+            self.log_performance_metric("load_configuration", duration)
+            
+            # Log configuration details
+            _LOGGER.debug("Loaded buffer configuration: global_enabled=%s, time=%dm, delta=%.1f, entity_overrides=%d", 
+                         self._global_buffer_config.enabled, 
+                         self._global_buffer_config.time_minutes,
+                         self._global_buffer_config.value_delta,
+                         len(self._global_buffer_config.entity_overrides))
+            
         except Exception as e:
-            _LOGGER.error("Failed to load buffer configuration: %s", e)
+            duration = time.time() - start_time
+            _LOGGER.error("Failed to load buffer configuration after %.3fs: %s", duration, e, exc_info=True)
             await self._initialize_default_configuration()
     
     async def save_configuration(self) -> None:
         """Save buffer configuration to storage."""
+        start_time = time.time()
+        _LOGGER.debug("Saving buffer configuration to storage...")
+        
         if not self.storage_service:
             _LOGGER.warning("No storage service available, cannot save configuration")
             return
         
         try:
+            load_start = time.time()
             schedule_data = await self.storage_service.load_schedules()
+            load_duration = time.time() - load_start
+            
             if not schedule_data:
                 _LOGGER.error("No schedule data available, cannot save buffer configuration")
                 return
             
+            _LOGGER.debug("Updating schedule data with buffer configuration: global_enabled=%s, entity_overrides=%d", 
+                         self._global_buffer_config.enabled, len(self._global_buffer_config.entity_overrides))
+            
             schedule_data.buffer_config = self._global_buffer_config
+            
+            save_start = time.time()
             await self.storage_service.save_schedules(schedule_data)
-            _LOGGER.debug("Saved buffer configuration to storage")
+            save_duration = time.time() - save_start
+            
+            total_duration = time.time() - start_time
+            _LOGGER.info("Buffer configuration saved successfully in %.3fs (load: %.3fs, save: %.3fs)", 
+                        total_duration, load_duration, save_duration)
+            self.log_performance_metric("save_configuration", total_duration, 
+                                      load_time=load_duration, save_time=save_duration)
+            
         except Exception as e:
-            _LOGGER.error("Failed to save buffer configuration: %s", e)
+            duration = time.time() - start_time
+            _LOGGER.error("Failed to save buffer configuration after %.3fs: %s", duration, e, exc_info=True)
     
     async def update_global_buffer_config(self, config: GlobalBufferConfig) -> None:
         """Update global buffer configuration and persist to storage."""
@@ -441,6 +480,207 @@ class BufferManager:
             "entities_tracked": list(self._entity_states.keys()),
             "storage_available": self.storage_service is not None
         }
+    
+    def get_diagnostic_info(self) -> Dict[str, Any]:
+        """Get comprehensive diagnostic information for troubleshooting."""
+        diagnostic_info = {
+            "manager_status": {
+                "storage_available": self.storage_service is not None,
+                "entities_tracked": len(self._entity_states),
+                "global_buffer_enabled": self._global_buffer_config.enabled,
+                "entity_overrides_count": len(self._global_buffer_config.entity_overrides)
+            },
+            "configuration": self.get_configuration_summary(),
+            "entity_states": {},
+            "buffer_decisions": {},
+            "validation_results": {},
+            "performance_metrics": {},
+            "troubleshooting": {
+                "common_issues": [],
+                "recommendations": []
+            }
+        }
+        
+        # Get detailed entity states
+        for entity_id, entity_state in self._entity_states.items():
+            ha_state = self.hass.states.get(entity_id)
+            diagnostic_info["entity_states"][entity_id] = {
+                "current_value": entity_state.current_value,
+                "last_manual_change": entity_state.last_manual_change.isoformat() if entity_state.last_manual_change else None,
+                "last_scheduled_change": entity_state.last_scheduled_change.isoformat() if entity_state.last_scheduled_change else None,
+                "buffer_config": entity_state.buffer_config.to_dict() if entity_state.buffer_config else None,
+                "ha_state": ha_state.state if ha_state else "not_found",
+                "ha_domain": ha_state.domain if ha_state else None,
+                "ha_last_updated": ha_state.last_updated.isoformat() if ha_state and ha_state.last_updated else None
+            }
+        
+        # Test buffer decisions for tracked entities
+        for entity_id in self._entity_states.keys():
+            try:
+                # Test with a hypothetical target value
+                current_state = self._entity_states[entity_id]
+                test_target = current_state.current_value + 5.0  # Test with +5 degree change
+                
+                # Test with default slot config
+                should_suppress = self.should_suppress_change(entity_id, test_target, {})
+                
+                diagnostic_info["buffer_decisions"][entity_id] = {
+                    "test_target": test_target,
+                    "would_suppress": should_suppress,
+                    "current_value": current_state.current_value,
+                    "time_since_manual": str(self.get_time_since_last_manual_change(entity_id)) if self.get_time_since_last_manual_change(entity_id) else None,
+                    "is_recent_manual": self.is_recent_manual_change(entity_id)
+                }
+            except Exception as e:
+                diagnostic_info["buffer_decisions"][entity_id] = {
+                    "error": str(e)
+                }
+        
+        # Run validation
+        is_valid, errors = self.validate_configuration()
+        diagnostic_info["validation_results"] = {
+            "is_valid": is_valid,
+            "errors": errors
+        }
+        
+        # Add troubleshooting information
+        diagnostic_info["troubleshooting"] = self._generate_troubleshooting_info(diagnostic_info)
+        
+        return diagnostic_info
+    
+    def _generate_troubleshooting_info(self, diagnostic_info: Dict[str, Any]) -> Dict[str, Any]:
+        """Generate troubleshooting information based on diagnostic data."""
+        issues = []
+        recommendations = []
+        
+        # Check for common issues
+        if not diagnostic_info["manager_status"]["storage_available"]:
+            issues.append("Storage service is not available")
+            recommendations.append("Check Home Assistant storage permissions and disk space")
+        
+        if not diagnostic_info["manager_status"]["global_buffer_enabled"]:
+            issues.append("Global buffer is disabled")
+            recommendations.append("Enable buffer if you want to prevent conflicts with manual changes")
+        
+        # Check entity states
+        missing_entities = []
+        stale_entities = []
+        for entity_id, entity_info in diagnostic_info["entity_states"].items():
+            if entity_info.get("ha_state") == "not_found":
+                missing_entities.append(entity_id)
+            elif entity_info.get("ha_last_updated"):
+                try:
+                    last_updated = datetime.fromisoformat(entity_info["ha_last_updated"].replace('Z', '+00:00'))
+                    if datetime.now().replace(tzinfo=last_updated.tzinfo) - last_updated > timedelta(hours=24):
+                        stale_entities.append(entity_id)
+                except Exception:
+                    pass
+        
+        if missing_entities:
+            issues.append(f"Tracked entities not found in Home Assistant: {', '.join(missing_entities)}")
+            recommendations.append("Remove non-existent entities from tracking or ensure they are properly configured")
+        
+        if stale_entities:
+            issues.append(f"Stale tracked entities (not updated in 24h): {', '.join(stale_entities)}")
+            recommendations.append("Check if these entities are working properly")
+        
+        # Check buffer configuration
+        global_config = diagnostic_info["configuration"]["global_config"]
+        if global_config.get("time_minutes", 0) == 0 and global_config.get("enabled", False):
+            issues.append("Buffer time is 0 minutes but buffering is enabled")
+            recommendations.append("Set a reasonable buffer time (e.g., 15 minutes) or disable buffering")
+        
+        if global_config.get("value_delta", 0) == 0 and global_config.get("enabled", False):
+            issues.append("Buffer value delta is 0 but buffering is enabled")
+            recommendations.append("Set a reasonable value delta (e.g., 2.0 degrees) or disable buffering")
+        
+        # Check validation errors
+        if not diagnostic_info["validation_results"]["is_valid"]:
+            issues.extend(diagnostic_info["validation_results"]["errors"])
+            recommendations.append("Fix configuration validation errors listed above")
+        
+        # Check for entities with no recent activity
+        inactive_entities = []
+        for entity_id, entity_info in diagnostic_info["entity_states"].items():
+            if not entity_info.get("last_manual_change") and not entity_info.get("last_scheduled_change"):
+                inactive_entities.append(entity_id)
+        
+        if inactive_entities:
+            issues.append(f"Entities with no recorded activity: {', '.join(inactive_entities)}")
+            recommendations.append("These entities may not be properly integrated with the scheduler")
+        
+        return {
+            "common_issues": issues,
+            "recommendations": recommendations,
+            "health_score": max(0, 100 - len(issues) * 10),  # Simple health scoring
+            "last_check": datetime.now().isoformat()
+        }
+    
+    def log_performance_metric(self, operation: str, duration_seconds: float, **kwargs) -> None:
+        """Log performance metrics if monitoring is enabled."""
+        if not PERFORMANCE_MONITORING:
+            return
+        
+        extra_info = ""
+        for key, value in kwargs.items():
+            extra_info += f" {key}={value}"
+        
+        _LOGGER.info("PERF: BufferManager.%s completed in %.3fs%s", operation, duration_seconds, extra_info)
+    
+    async def run_diagnostics(self) -> Dict[str, Any]:
+        """Run comprehensive diagnostics and return results."""
+        _LOGGER.info("Running BufferManager diagnostics...")
+        
+        start_time = time.time()
+        diagnostic_info = self.get_diagnostic_info()
+        
+        # Test buffer decision performance
+        if self._entity_states:
+            try:
+                test_entity = next(iter(self._entity_states.keys()))
+                test_start = time.time()
+                
+                # Test multiple buffer decisions
+                for i in range(10):
+                    self.should_suppress_change(test_entity, 20.0 + i, {})
+                
+                test_duration = time.time() - test_start
+                
+                diagnostic_info["performance_metrics"]["buffer_decisions"] = {
+                    "duration_per_decision": test_duration / 10,
+                    "total_test_duration": test_duration,
+                    "test_entity": test_entity,
+                    "timestamp": datetime.now().isoformat()
+                }
+            except Exception as e:
+                diagnostic_info["performance_metrics"]["buffer_decisions"] = {
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
+        
+        # Test configuration loading
+        if self.storage_service:
+            try:
+                load_start = time.time()
+                await self.load_configuration()
+                load_duration = time.time() - load_start
+                
+                diagnostic_info["performance_metrics"]["configuration_loading"] = {
+                    "duration_seconds": load_duration,
+                    "timestamp": datetime.now().isoformat()
+                }
+            except Exception as e:
+                diagnostic_info["performance_metrics"]["configuration_loading"] = {
+                    "error": str(e),
+                    "timestamp": datetime.now().isoformat()
+                }
+        
+        total_duration = time.time() - start_time
+        diagnostic_info["performance_metrics"]["total_diagnostic_time"] = total_duration
+        
+        _LOGGER.info("BufferManager diagnostics completed in %.3fs", total_duration)
+        
+        return diagnostic_info
     
     def validate_configuration(self) -> tuple[bool, List[str]]:
         """
