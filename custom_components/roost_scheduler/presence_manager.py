@@ -294,45 +294,57 @@ class PresenceManager:
     
     async def configure_presence(self, entities: List[str], rule: str, timeout_seconds: int, 
                                 custom_template: Optional[str] = None) -> None:
-        """Configure presence detection settings."""
-        # Clean up existing listeners
-        for listener in self._state_listeners:
-            listener()
-        self._state_listeners.clear()
+        """Configure presence detection settings with validation and event emission."""
+        old_config = self.get_configuration_summary()
         
-        # Update configuration
-        self._presence_entities = entities
-        self._presence_rule = rule
-        self._timeout_seconds = timeout_seconds
-        
-        # Configure custom template if provided
-        if custom_template:
-            try:
-                self._custom_template = Template(custom_template, self.hass)
-                # Extract entities referenced in the template
-                self._template_entities = self._extract_template_entities(custom_template)
-                _LOGGER.info("Configured custom presence template with entities: %s", 
-                           self._template_entities)
-            except Exception as e:
-                _LOGGER.error("Failed to configure custom template: %s", e)
+        try:
+            # Validate configuration before applying
+            await self._validate_presence_configuration(entities, rule, timeout_seconds, custom_template)
+            
+            # Clean up existing listeners
+            for listener in self._state_listeners:
+                listener()
+            self._state_listeners.clear()
+            
+            # Update configuration
+            self._presence_entities = entities
+            self._presence_rule = rule
+            self._timeout_seconds = timeout_seconds
+            
+            # Configure custom template if provided
+            if custom_template:
+                try:
+                    self._custom_template = Template(custom_template, self.hass)
+                    # Extract entities referenced in the template
+                    self._template_entities = self._extract_template_entities(custom_template)
+                    _LOGGER.info("Configured custom presence template with entities: %s", 
+                               self._template_entities)
+                except Exception as e:
+                    _LOGGER.error("Failed to configure custom template: %s", e)
+                    self._custom_template = None
+                    self._template_entities = []
+            else:
                 self._custom_template = None
                 self._template_entities = []
-        else:
-            self._custom_template = None
-            self._template_entities = []
-        
-        # Save configuration to storage
-        try:
+            
+            # Save configuration to storage
             await self.save_configuration()
+            
+            # Set up new listeners if initialized
+            if self._initialized:
+                await self._setup_state_listeners()
+            
+            # Emit configuration change event for real-time updates
+            await self._emit_configuration_change_event("configure_presence", old_config, self.get_configuration_summary())
+            
+            _LOGGER.info("Configured presence: entities=%s, rule=%s, timeout=%ds, template=%s", 
+                        entities, rule, timeout_seconds, bool(custom_template))
+            
         except Exception as e:
-            _LOGGER.error("Failed to save presence configuration: %s", e)
-        
-        # Set up new listeners if initialized
-        if self._initialized:
-            await self._setup_state_listeners()
-        
-        _LOGGER.info("Configured presence: entities=%s, rule=%s, timeout=%ds, template=%s", 
-                    entities, rule, timeout_seconds, bool(custom_template))
+            _LOGGER.error("Failed to configure presence: %s", e)
+            # Restore old configuration on error
+            await self._restore_configuration(old_config)
+            raise
     
     def _is_entity_home(self, state: State) -> bool:
         """Determine if an entity state indicates 'home'."""
@@ -615,15 +627,16 @@ class PresenceManager:
         except Exception as e:
             duration = time.time() - start_time
             _LOGGER.error("Failed to save presence configuration after %.3fs: %s", duration, e, exc_info=True)
+            raise
     
     async def update_presence_entities(self, entities: List[str]) -> None:
-        """Update presence entities and persist to storage."""
+        """Update presence entities and persist to storage with validation and event emission."""
+        old_config = self.get_configuration_summary()
         old_entities = self._presence_entities.copy()
+        
         try:
             # Validate entities
-            for entity_id in entities:
-                if not isinstance(entity_id, str) or '.' not in entity_id:
-                    raise ValueError(f"Invalid entity_id: {entity_id}")
+            await self._validate_presence_entities(entities)
             
             # Update configuration
             self._presence_entities = entities.copy()
@@ -635,7 +648,11 @@ class PresenceManager:
             if self._initialized:
                 await self._setup_state_listeners()
             
+            # Emit configuration change event for real-time updates
+            await self._emit_configuration_change_event("update_presence_entities", old_config, self.get_configuration_summary())
+            
             _LOGGER.info("Updated presence entities from %s to %s", old_entities, entities)
+            
         except Exception as e:
             _LOGGER.error("Failed to update presence entities: %s", e)
             # Revert on error
@@ -643,19 +660,24 @@ class PresenceManager:
             raise
     
     async def update_presence_rule(self, rule: str) -> None:
-        """Update presence rule and persist to storage."""
+        """Update presence rule and persist to storage with validation and event emission."""
+        old_config = self.get_configuration_summary()
         old_rule = self._presence_rule
+        
         try:
-            valid_rules = {"anyone_home", "everyone_home", "custom"}
-            if rule not in valid_rules:
-                raise ValueError(f"Invalid presence rule: {rule}. Must be one of {valid_rules}")
+            # Validate rule
+            await self._validate_presence_rule(rule)
             
             self._presence_rule = rule
             
             # Save to storage
             await self.save_configuration()
             
+            # Emit configuration change event for real-time updates
+            await self._emit_configuration_change_event("update_presence_rule", old_config, self.get_configuration_summary())
+            
             _LOGGER.info("Updated presence rule from %s to %s", old_rule, rule)
+            
         except Exception as e:
             _LOGGER.error("Failed to update presence rule: %s", e)
             # Revert on error
@@ -676,6 +698,108 @@ class PresenceManager:
             "storage_service_available": self.storage_service is not None,
             "presence_config_loaded": self._presence_config is not None
         }
+    
+    async def _validate_presence_configuration(self, entities: List[str], rule: str, timeout_seconds: int, custom_template: Optional[str] = None) -> None:
+        """Validate complete presence configuration."""
+        await self._validate_presence_entities(entities)
+        await self._validate_presence_rule(rule)
+        await self._validate_timeout_seconds(timeout_seconds)
+        if custom_template:
+            await self._validate_custom_template(custom_template)
+    
+    async def _validate_presence_entities(self, entities: List[str]) -> None:
+        """Validate presence entities list."""
+        if not isinstance(entities, list):
+            raise ValueError("entities must be a list")
+        
+        for entity_id in entities:
+            if not isinstance(entity_id, str) or '.' not in entity_id:
+                raise ValueError(f"Invalid entity_id: {entity_id}")
+            
+            # Check if entity exists in Home Assistant
+            state = self.hass.states.get(entity_id)
+            if not state:
+                _LOGGER.warning("Entity %s not found in Home Assistant", entity_id)
+    
+    async def _validate_presence_rule(self, rule: str) -> None:
+        """Validate presence rule."""
+        valid_rules = {"anyone_home", "everyone_home", "custom"}
+        if rule not in valid_rules:
+            raise ValueError(f"Invalid presence rule: {rule}. Must be one of {valid_rules}")
+    
+    async def _validate_timeout_seconds(self, timeout_seconds: int) -> None:
+        """Validate timeout seconds."""
+        if not isinstance(timeout_seconds, int) or timeout_seconds < 0:
+            raise ValueError(f"timeout_seconds must be a non-negative integer, got {timeout_seconds}")
+        if timeout_seconds > 86400:  # 24 hours
+            raise ValueError(f"timeout_seconds cannot exceed 86400 (24 hours), got {timeout_seconds}")
+    
+    async def _validate_custom_template(self, template_str: str) -> None:
+        """Validate custom template."""
+        if not isinstance(template_str, str):
+            raise ValueError("custom_template must be a string")
+        
+        try:
+            # Test template compilation
+            Template(template_str, self.hass)
+        except Exception as e:
+            raise ValueError(f"Invalid template syntax: {e}")
+    
+    async def _emit_configuration_change_event(self, operation: str, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> None:
+        """Emit configuration change event for real-time updates."""
+        try:
+            from .const import DOMAIN
+            event_data = {
+                "manager": "presence",
+                "operation": operation,
+                "timestamp": datetime.now().isoformat(),
+                "old_config": old_config,
+                "new_config": new_config,
+                "changes": self._calculate_config_changes(old_config, new_config)
+            }
+            
+            self.hass.bus.async_fire(f"{DOMAIN}_config_changed", event_data)
+            _LOGGER.debug("Emitted configuration change event for %s", operation)
+            
+        except Exception as e:
+            _LOGGER.error("Failed to emit configuration change event: %s", e)
+    
+    def _calculate_config_changes(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate what changed between configurations."""
+        changes = {}
+        
+        for key in set(old_config.keys()) | set(new_config.keys()):
+            old_value = old_config.get(key)
+            new_value = new_config.get(key)
+            
+            if old_value != new_value:
+                changes[key] = {
+                    "old": old_value,
+                    "new": new_value
+                }
+        
+        return changes
+    
+    async def _restore_configuration(self, config: Dict[str, Any]) -> None:
+        """Restore configuration from backup."""
+        try:
+            self._presence_entities = config.get("presence_entities", [])
+            self._presence_rule = config.get("presence_rule", "anyone_home")
+            self._timeout_seconds = config.get("timeout_seconds", 600)
+            
+            # Restore template if present
+            template_str = config.get("custom_template")
+            if template_str:
+                self._custom_template = Template(template_str, self.hass)
+                self._template_entities = config.get("template_entities", [])
+            else:
+                self._custom_template = None
+                self._template_entities = []
+            
+            _LOGGER.debug("Restored presence configuration from backup")
+            
+        except Exception as e:
+            _LOGGER.error("Failed to restore configuration: %s", e)
     
     def get_diagnostic_info(self) -> Dict[str, Any]:
         """Get comprehensive diagnostic information for troubleshooting."""

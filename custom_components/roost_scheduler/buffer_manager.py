@@ -253,17 +253,37 @@ class BufferManager:
             )
             return self._global_buffer
     
-    def update_global_buffer(self, buffer_config: BufferConfig) -> None:
-        """Update the global buffer configuration (legacy method for compatibility)."""
-        self._global_buffer = buffer_config
-        # Also update the new global buffer config for consistency
-        self._global_buffer_config.time_minutes = buffer_config.time_minutes
-        self._global_buffer_config.value_delta = buffer_config.value_delta
-        self._global_buffer_config.enabled = buffer_config.enabled
-        if hasattr(buffer_config, 'apply_to'):
-            self._global_buffer_config.apply_to = buffer_config.apply_to
-        _LOGGER.debug("Updated global buffer config: time=%d min, delta=%.1f", 
-                     buffer_config.time_minutes, buffer_config.value_delta)
+    async def update_global_buffer(self, buffer_config: BufferConfig) -> None:
+        """Update the global buffer configuration (legacy method for compatibility) with validation and persistence."""
+        old_config = self.get_configuration_summary()
+        old_buffer = self._global_buffer
+        
+        try:
+            # Validate configuration
+            buffer_config.validate()
+            
+            self._global_buffer = buffer_config
+            # Also update the new global buffer config for consistency
+            self._global_buffer_config.time_minutes = buffer_config.time_minutes
+            self._global_buffer_config.value_delta = buffer_config.value_delta
+            self._global_buffer_config.enabled = buffer_config.enabled
+            if hasattr(buffer_config, 'apply_to'):
+                self._global_buffer_config.apply_to = buffer_config.apply_to
+            
+            # Save to storage
+            await self.save_configuration()
+            
+            # Emit configuration change event for real-time updates
+            await self._emit_configuration_change_event("update_global_buffer", old_config, self.get_configuration_summary())
+            
+            _LOGGER.info("Updated global buffer config: time=%d min, delta=%.1f, enabled=%s", 
+                        buffer_config.time_minutes, buffer_config.value_delta, buffer_config.enabled)
+            
+        except Exception as e:
+            _LOGGER.error("Failed to update global buffer configuration: %s", e)
+            # Revert on error
+            self._global_buffer = old_buffer
+            raise
     
     def get_entity_state(self, entity_id: str) -> EntityState | None:
         """Get the current state for an entity."""
@@ -435,29 +455,65 @@ class BufferManager:
         except Exception as e:
             duration = time.time() - start_time
             _LOGGER.error("Failed to save buffer configuration after %.3fs: %s", duration, e, exc_info=True)
+            raise
     
     async def update_global_buffer_config(self, config: GlobalBufferConfig) -> None:
-        """Update global buffer configuration and persist to storage."""
+        """Update global buffer configuration and persist to storage with validation and event emission."""
+        old_config = self.get_configuration_summary()
+        old_global_config = self._global_buffer_config
+        
         try:
+            # Validate configuration
             config.validate()
+            
             self._global_buffer_config = config
             # Update legacy _global_buffer for compatibility
             self._global_buffer = config.get_effective_config("")
+            
+            # Save to storage
             await self.save_configuration()
-            _LOGGER.debug("Updated global buffer configuration")
+            
+            # Emit configuration change event for real-time updates
+            await self._emit_configuration_change_event("update_global_buffer_config", old_config, self.get_configuration_summary())
+            
+            _LOGGER.info("Updated global buffer configuration: enabled=%s, time=%dm, delta=%.1f, overrides=%d", 
+                        config.enabled, config.time_minutes, config.value_delta, len(config.entity_overrides))
+            
         except Exception as e:
             _LOGGER.error("Failed to update global buffer configuration: %s", e)
+            # Revert on error
+            self._global_buffer_config = old_global_config
+            self._global_buffer = old_global_config.get_effective_config("")
             raise
     
     async def update_entity_buffer_config(self, entity_id: str, config: BufferConfig) -> None:
-        """Update entity-specific buffer configuration and persist to storage."""
+        """Update entity-specific buffer configuration and persist to storage with validation and event emission."""
+        old_config = self.get_configuration_summary()
+        old_entity_config = self._global_buffer_config.entity_overrides.get(entity_id)
+        
         try:
+            # Validate entity_id and configuration
+            await self._validate_entity_id(entity_id)
             config.validate()
+            
             self._global_buffer_config.set_entity_override(entity_id, config)
+            
+            # Save to storage
             await self.save_configuration()
-            _LOGGER.debug("Updated buffer configuration for entity %s", entity_id)
+            
+            # Emit configuration change event for real-time updates
+            await self._emit_configuration_change_event("update_entity_buffer_config", old_config, self.get_configuration_summary(), entity_id=entity_id)
+            
+            _LOGGER.info("Updated buffer configuration for entity %s: time=%dm, delta=%.1f, enabled=%s", 
+                        entity_id, config.time_minutes, config.value_delta, config.enabled)
+            
         except Exception as e:
             _LOGGER.error("Failed to update buffer configuration for entity %s: %s", entity_id, e)
+            # Revert on error
+            if old_entity_config:
+                self._global_buffer_config.set_entity_override(entity_id, old_entity_config)
+            else:
+                self._global_buffer_config.remove_entity_override(entity_id)
             raise
     
     async def remove_entity_buffer_config(self, entity_id: str) -> bool:
@@ -547,6 +603,77 @@ class BufferManager:
         diagnostic_info["troubleshooting"] = self._generate_troubleshooting_info(diagnostic_info)
         
         return diagnostic_info
+    
+    async def _validate_entity_id(self, entity_id: str) -> None:
+        """Validate entity ID format and existence."""
+        if not isinstance(entity_id, str) or '.' not in entity_id:
+            raise ValueError(f"Invalid entity_id format: {entity_id}")
+        
+        # Check if entity exists in Home Assistant
+        state = self.hass.states.get(entity_id)
+        if not state:
+            _LOGGER.warning("Entity %s not found in Home Assistant", entity_id)
+    
+    async def _emit_configuration_change_event(self, operation: str, old_config: Dict[str, Any], new_config: Dict[str, Any], **kwargs) -> None:
+        """Emit configuration change event for real-time updates."""
+        try:
+            from .const import DOMAIN
+            event_data = {
+                "manager": "buffer",
+                "operation": operation,
+                "timestamp": datetime.now().isoformat(),
+                "old_config": old_config,
+                "new_config": new_config,
+                "changes": self._calculate_config_changes(old_config, new_config),
+                **kwargs
+            }
+            
+            self.hass.bus.async_fire(f"{DOMAIN}_config_changed", event_data)
+            _LOGGER.debug("Emitted configuration change event for %s", operation)
+            
+        except Exception as e:
+            _LOGGER.error("Failed to emit configuration change event: %s", e)
+    
+    def _calculate_config_changes(self, old_config: Dict[str, Any], new_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Calculate what changed between configurations."""
+        changes = {}
+        
+        for key in set(old_config.keys()) | set(new_config.keys()):
+            old_value = old_config.get(key)
+            new_value = new_config.get(key)
+            
+            if old_value != new_value:
+                changes[key] = {
+                    "old": old_value,
+                    "new": new_value
+                }
+        
+        return changes
+    
+    def validate_configuration(self) -> tuple[bool, List[str]]:
+        """Validate current buffer configuration and return validation results."""
+        errors = []
+        
+        try:
+            # Validate global buffer config
+            self._global_buffer_config.validate()
+        except ValueError as e:
+            errors.append(f"Global buffer config error: {e}")
+        
+        try:
+            # Validate legacy buffer config
+            self._global_buffer.validate()
+        except ValueError as e:
+            errors.append(f"Legacy buffer config error: {e}")
+        
+        # Validate entity states
+        for entity_id, entity_state in self._entity_states.items():
+            try:
+                entity_state.validate()
+            except ValueError as e:
+                errors.append(f"Entity state error for {entity_id}: {e}")
+        
+        return len(errors) == 0, errors
     
     def _generate_troubleshooting_info(self, diagnostic_info: Dict[str, Any]) -> Dict[str, Any]:
         """Generate troubleshooting information based on diagnostic data."""

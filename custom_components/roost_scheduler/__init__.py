@@ -976,8 +976,7 @@ async def get_setup_diagnostics(hass: HomeAssistant, entry_id: str) -> dict:
     
     return diagnostics
 
-def 
-_log_setup_summary(setup_diagnostics: dict) -> None:
+def _log_setup_summary(setup_diagnostics: dict) -> None:
     """Log a comprehensive setup summary."""
     duration = setup_diagnostics.get("duration_seconds", 0)
     components_initialized = setup_diagnostics.get("components_initialized", [])
