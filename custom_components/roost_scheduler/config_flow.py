@@ -147,6 +147,10 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             buffer_time_minutes = user_input.get("buffer_time_minutes", DEFAULT_BUFFER_TIME_MINUTES)
             buffer_value_delta = user_input.get("buffer_value_delta", DEFAULT_BUFFER_VALUE_DELTA)
             
+            # Convert float to int if it's a whole number (Home Assistant NumberSelector can return floats)
+            if isinstance(buffer_time_minutes, float) and buffer_time_minutes.is_integer():
+                buffer_time_minutes = int(buffer_time_minutes)
+            
             # Validate buffer settings
             validation_errors = await self._validate_buffer_settings(
                 buffer_enabled, buffer_time_minutes, buffer_value_delta
@@ -375,7 +379,15 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not isinstance(enabled, bool):
             errors["buffer_enabled"] = "invalid_boolean"
         
-        if not isinstance(time_minutes, int) or time_minutes < 0 or time_minutes > 1440:
+        # Convert float to int if it's a whole number (Home Assistant NumberSelector can return floats)
+        if isinstance(time_minutes, float) and time_minutes.is_integer():
+            time_minutes = int(time_minutes)
+        
+        if not isinstance(time_minutes, (int, float)) or time_minutes < 0 or time_minutes > 1440:
+            errors["buffer_time_minutes"] = "invalid_time_range"
+        
+        # Also validate that it's a whole number
+        if isinstance(time_minutes, float) and not time_minutes.is_integer():
             errors["buffer_time_minutes"] = "invalid_time_range"
         
         if not isinstance(value_delta, (int, float)) or value_delta < 0.1 or value_delta > 10.0:

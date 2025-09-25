@@ -619,6 +619,28 @@ async def test_buffer_settings_validation_edge_cases(config_flow):
     
     assert result4["type"] == data_entry_flow.RESULT_TYPE_FORM
     assert result4["errors"] == {"buffer_value_delta": "invalid_delta_range"}
+    
+    # Test float to int conversion (Home Assistant NumberSelector can return floats)
+    result5 = await config_flow.async_step_buffer({
+        "buffer_enabled": True,
+        "buffer_time_minutes": 15.0,  # Float that should be converted to int
+        "buffer_value_delta": 2.0
+    })
+    
+    assert result5["type"] == data_entry_flow.RESULT_TYPE_FORM
+    assert result5["step_id"] == "card"
+    assert result5.get("errors") is None or result5.get("errors") == {}
+    assert config_flow._buffer_time_minutes == 15  # Should be converted to int
+    
+    # Test non-integer float (should fail)
+    result6 = await config_flow.async_step_buffer({
+        "buffer_enabled": True,
+        "buffer_time_minutes": 15.5,  # Non-integer float should fail
+        "buffer_value_delta": 2.0
+    })
+    
+    assert result6["type"] == data_entry_flow.RESULT_TYPE_FORM
+    assert result6["errors"] == {"buffer_time_minutes": "invalid_time_range"}
 
 
 async def test_config_flow_preserves_existing_installations(config_flow, mock_climate_entity):
