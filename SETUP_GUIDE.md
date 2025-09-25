@@ -66,11 +66,13 @@ The setup wizard will guide you through:
      - `anyone_home`: Home when any selected entity is home
      - `everyone_home`: Home only when all selected entities are home
    - Set presence timeout (default: 10 minutes)
+   - **Note**: Presence configuration is automatically saved to persistent storage and will be preserved across Home Assistant restarts
 
 3. **Buffer Settings**
    - Configure global buffer time (default: 15 minutes)
    - Set temperature tolerance (default: 2.0°C)
    - These prevent conflicts with manual adjustments
+   - **Note**: Buffer configuration is automatically saved to persistent storage and will be preserved across Home Assistant restarts
 
 4. **Dashboard Integration**
    - Option to automatically add the scheduler card to a dashboard
@@ -85,6 +87,8 @@ After setup, you should see:
   - `roost_scheduler.migrate_resolution`
 - Storage files created in `.storage/roost_scheduler`
 - Card available in Lovelace card picker (if dashboard integration was selected)
+
+**Configuration Persistence**: All manager configurations (presence settings, buffer settings) are automatically saved to Home Assistant's storage system and will persist across restarts. If you're upgrading from an older version, your existing configuration will be automatically migrated to the new storage format.
 
 ## Basic Configuration
 
@@ -318,7 +322,42 @@ data:
 - **Documentation**: Check GitHub wiki for additional guides
 - **Updates**: Follow releases for new features and fixes
 
-## Migration from Other Schedulers
+## Configuration Migration for Existing Users
+
+### Upgrading from Previous Versions
+
+If you're upgrading from a version prior to 0.3.0, your configuration will be automatically migrated:
+
+1. **Automatic Migration**: The integration will detect your existing configuration and migrate it to the new storage format
+2. **Backup Creation**: A backup of your original configuration is created before migration
+3. **Validation**: The migration process validates all settings and fixes any inconsistencies
+4. **Fallback**: If migration fails, the system falls back to default settings and logs the issue
+
+**What Gets Migrated:**
+- Presence entity configurations
+- Presence detection rules and timeouts
+- Buffer settings (global and entity-specific)
+- Schedule data and entity tracking
+
+**Migration Process:**
+```yaml
+# The migration happens automatically during startup
+# You can monitor the process in the logs:
+# "Migration completed from version X.X.X to Y.Y.Y"
+# "Presence configuration migrated successfully"
+# "Buffer configuration migrated successfully"
+```
+
+**Troubleshooting Migration Issues:**
+If migration fails, check the logs for specific error messages and use the diagnostic service:
+
+```yaml
+service: roost_scheduler.run_diagnostics
+data:
+  include_migration_status: true
+```
+
+### Migration from Other Schedulers
 
 If migrating from other scheduling solutions:
 

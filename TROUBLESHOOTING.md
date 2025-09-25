@@ -37,7 +37,128 @@ This enables comprehensive logging for 30 minutes, then automatically returns to
 
 ## Common Issues
 
-### 1. Schedules Not Applying
+### 1. Manager Initialization Failures
+
+**Symptoms:**
+- Integration fails to load during Home Assistant startup
+- Error messages about manager initialization in logs
+- Services not available or partially working
+- Configuration not persisting across restarts
+
+**Common Error Messages:**
+```
+TypeError: PresenceManager.__init__() takes 2 positional arguments but 3 were given
+TypeError: BufferManager.__init__() takes 2 positional arguments but 3 were given
+Failed to initialize PresenceManager: [error details]
+Failed to initialize BufferManager: [error details]
+Storage service initialization failed
+Configuration migration failed
+```
+
+**Diagnosis Steps:**
+
+1. **Check Integration Status**
+   ```yaml
+   # In Developer Tools → Services
+   # Look for roost_scheduler services
+   # If missing, integration failed to load
+   ```
+
+2. **Review Startup Logs**
+   ```yaml
+   # Check Home Assistant logs for:
+   # - Manager initialization errors
+   # - Storage service failures
+   # - Configuration migration issues
+   ```
+
+3. **Run Diagnostic Service**
+   ```yaml
+   service: roost_scheduler.run_diagnostics
+   data:
+     include_manager_status: true
+     include_storage_status: true
+   ```
+
+**Solutions by Error Type:**
+
+| Error Type | Cause | Solution |
+|------------|-------|----------|
+| Constructor TypeError | Version mismatch or incomplete upgrade | Restart HA, check for partial installation |
+| Storage initialization failed | Permissions or disk space issues | Check HA storage permissions and available space |
+| Configuration migration failed | Corrupted config or version conflict | Reset configuration or restore from backup |
+| Manager not found in entry data | Incomplete setup or initialization failure | Remove and re-add integration |
+
+**Recovery Steps:**
+
+```yaml
+# 1. Quick recovery - restart Home Assistant
+# This resolves most temporary initialization issues
+
+# 2. Reset manager configuration
+service: roost_scheduler.reset_manager_configuration
+data:
+  preserve_schedules: true
+  reset_presence: false  # Keep presence settings
+  reset_buffer: false    # Keep buffer settings
+
+# 3. Force configuration migration
+service: roost_scheduler.force_configuration_migration
+data:
+  backup_existing: true
+  
+# 4. Complete reset (last resort)
+service: roost_scheduler.reset_configuration
+data:
+  preserve_schedules: true
+  create_backup: true
+```
+
+### 2. Configuration Storage Issues
+
+**Symptoms:**
+- Settings don't persist after restart
+- Configuration appears to reset to defaults
+- Migration warnings in logs
+- Storage validation errors
+
+**Diagnosis Steps:**
+
+1. **Check Storage Files**
+   ```bash
+   # Look for storage files in .storage directory
+   ls -la .storage/roost_scheduler*
+   
+   # Check file permissions and sizes
+   ```
+
+2. **Validate Configuration**
+   ```yaml
+   service: roost_scheduler.validate_configuration
+   data:
+     repair_if_possible: true
+     detailed_report: true
+   ```
+
+3. **Test Storage Operations**
+   ```yaml
+   service: roost_scheduler.test_storage_operations
+   data:
+     test_read: true
+     test_write: true
+     test_migration: true
+   ```
+
+**Common Storage Issues:**
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Permission denied | HA user lacks write permissions | Fix file permissions on .storage directory |
+| Disk full | Insufficient storage space | Free up disk space |
+| Corrupted data | File system errors or power loss | Restore from backup or reset configuration |
+| Version mismatch | Incomplete upgrade process | Force migration or clean reinstall |
+
+### 3. Schedules Not Applying
 
 **Symptoms:**
 - Schedule shows in card but temperature doesn't change
@@ -343,6 +464,88 @@ data:
 
 ## Advanced Troubleshooting
 
+### Configuration Validation and Repair
+
+**Comprehensive Configuration Diagnostics:**
+
+```yaml
+# Run full configuration validation
+service: roost_scheduler.validate_configuration
+data:
+  check_presence_config: true
+  check_buffer_config: true
+  check_entity_references: true
+  check_storage_integrity: true
+  repair_if_possible: true
+  generate_report: true
+```
+
+**Configuration Repair Procedures:**
+
+```yaml
+# 1. Repair presence configuration
+service: roost_scheduler.repair_presence_configuration
+data:
+  remove_invalid_entities: true
+  reset_invalid_rules: true
+  fix_timeout_values: true
+
+# 2. Repair buffer configuration  
+service: roost_scheduler.repair_buffer_configuration
+data:
+  reset_invalid_values: true
+  remove_orphaned_overrides: true
+  validate_entity_references: true
+
+# 3. Repair storage consistency
+service: roost_scheduler.repair_storage_consistency
+data:
+  fix_version_mismatches: true
+  remove_corrupted_data: true
+  rebuild_indexes: true
+```
+
+**Manager-Specific Diagnostics:**
+
+```yaml
+# Presence Manager diagnostics
+service: roost_scheduler.diagnose_presence_manager
+data:
+  test_entity_states: true
+  test_rule_evaluation: true
+  test_timeout_logic: true
+  test_override_entities: true
+
+# Buffer Manager diagnostics  
+service: roost_scheduler.diagnose_buffer_manager
+data:
+  test_buffer_logic: true
+  test_entity_tracking: true
+  test_configuration_persistence: true
+  analyze_suppression_patterns: true
+
+# Storage Service diagnostics
+service: roost_scheduler.diagnose_storage_service
+data:
+  test_read_operations: true
+  test_write_operations: true
+  test_migration_capability: true
+  check_data_integrity: true
+```
+
+**Configuration Issue Detection:**
+
+The diagnostic system automatically detects these common configuration issues:
+
+| Issue Type | Detection Method | Auto-Repair Available |
+|------------|------------------|----------------------|
+| Invalid entity references | Entity state lookup | Yes - removes invalid entities |
+| Corrupted presence rules | Rule validation | Yes - resets to default |
+| Buffer value out of range | Value range checking | Yes - clamps to valid range |
+| Storage version mismatch | Version comparison | Yes - triggers migration |
+| Missing required fields | Schema validation | Yes - adds default values |
+| Circular dependencies | Dependency analysis | Yes - breaks circular refs |
+
 ### Debug Logging Analysis
 
 **Enable Comprehensive Logging:**
@@ -356,6 +559,8 @@ logger:
     custom_components.roost_scheduler.schedule_manager: debug
     custom_components.roost_scheduler.presence_manager: debug
     custom_components.roost_scheduler.buffer_manager: debug
+    custom_components.roost_scheduler.storage: debug
+    custom_components.roost_scheduler.config_validator: debug
 ```
 
 **Key Log Messages to Look For:**
@@ -367,6 +572,14 @@ logger:
 | Buffer Manager | `Suppressing change for climate.living_room` | Buffer preventing change |
 | Presence Manager | `Presence mode changed from away to home` | Mode change detected |
 | Storage | `Migration completed from 0.2.0 to 0.3.0` | Data migration |
+| **Manager Init** | `PresenceManager initialized with storage integration` | **Successful manager setup** |
+| **Manager Init** | `Failed to initialize PresenceManager: TypeError` | **Constructor parameter mismatch** |
+| **Manager Init** | `BufferManager configuration loaded from storage` | **Configuration persistence working** |
+| **Manager Init** | `Configuration migration started for entry_id` | **Automatic migration in progress** |
+| **Storage** | `Storage service initialization failed: PermissionError` | **Storage permission issues** |
+| **Storage** | `Configuration validation failed: invalid presence rule` | **Configuration corruption detected** |
+| **Config Validator** | `Repaired presence configuration: removed invalid entities` | **Automatic configuration repair** |
+| **Config Validator** | `Buffer configuration validation passed` | **Configuration integrity confirmed** |
 
 ### Network and WebSocket Issues
 
@@ -427,6 +640,96 @@ recorder:
     # Exclude high-frequency debug entities if needed
     entities:
       - roost_scheduler.debug_*
+```
+
+### New Error Scenarios (Version 0.3.0+)
+
+**Manager Integration Errors:**
+
+These errors are specific to the enhanced manager integration with storage persistence:
+
+```yaml
+# Error: Manager constructor parameter mismatch
+# Log: "TypeError: PresenceManager.__init__() takes 2 positional arguments but 3 were given"
+# Cause: Incomplete upgrade or version mismatch
+# Solution: Restart HA, check installation integrity
+
+# Error: Storage service not available
+# Log: "Failed to initialize managers: storage_service is None"
+# Cause: Storage service initialization failed
+# Solution: Check storage permissions, restart HA
+
+# Error: Configuration migration failure
+# Log: "Configuration migration failed: unable to parse existing data"
+# Cause: Corrupted configuration or unsupported format
+# Solution: Reset configuration or restore from backup
+
+# Error: Manager configuration validation failure
+# Log: "PresenceManager configuration validation failed: invalid entities"
+# Cause: Referenced entities no longer exist
+# Solution: Update configuration or use repair service
+```
+
+**Storage Integration Errors:**
+
+```yaml
+# Error: Storage persistence failure
+# Log: "Failed to save presence configuration: disk full"
+# Cause: Insufficient disk space
+# Solution: Free up storage space
+
+# Error: Configuration loading failure
+# Log: "Failed to load buffer configuration: file corrupted"
+# Cause: Storage file corruption
+# Solution: Restore from backup or reset configuration
+
+# Error: Migration version conflict
+# Log: "Cannot migrate from version X.X.X: unsupported version"
+# Cause: Attempting to migrate from incompatible version
+# Solution: Manual configuration reset required
+```
+
+**Configuration Validation Errors:**
+
+```yaml
+# Error: Entity reference validation failure
+# Log: "Configuration validation failed: entity climate.nonexistent not found"
+# Cause: Configuration references deleted entities
+# Solution: Remove invalid entity references
+
+# Error: Presence rule validation failure
+# Log: "Invalid presence rule 'invalid_rule': must be 'anyone_home' or 'everyone_home'"
+# Cause: Configuration corruption or manual editing error
+# Solution: Reset presence rule to valid value
+
+# Error: Buffer configuration validation failure
+# Log: "Buffer time_minutes value 'invalid' is not a valid number"
+# Cause: Invalid configuration values
+# Solution: Reset buffer configuration to defaults
+```
+
+**Recovery Procedures for New Errors:**
+
+```yaml
+# For manager initialization errors:
+service: roost_scheduler.reset_manager_configuration
+data:
+  force_reinitialize: true
+  preserve_schedules: true
+
+# For storage integration errors:
+service: roost_scheduler.repair_storage_integration
+data:
+  check_permissions: true
+  validate_files: true
+  create_missing_files: true
+
+# For configuration validation errors:
+service: roost_scheduler.validate_and_repair_configuration
+data:
+  auto_fix_entity_references: true
+  reset_invalid_values: true
+  backup_before_repair: true
 ```
 
 ## Getting Help
@@ -501,10 +804,89 @@ For complex installations or custom requirements:
    - Performance optimization review
    - Security audit of access controls
 
+### Configuration Validation and Repair Guide
+
+**Automated Configuration Validation:**
+
+The integration includes comprehensive configuration validation that runs automatically during startup and can be triggered manually:
+
+```yaml
+# Run comprehensive configuration validation
+service: roost_scheduler.validate_configuration
+data:
+  check_all_components: true
+  auto_repair: true
+  generate_detailed_report: true
+  backup_before_repair: true
+```
+
+**Manual Configuration Repair Steps:**
+
+1. **Identify Configuration Issues:**
+   ```yaml
+   service: roost_scheduler.identify_configuration_issues
+   data:
+     check_entity_references: true
+     check_value_ranges: true
+     check_data_integrity: true
+   ```
+
+2. **Repair Specific Components:**
+   ```yaml
+   # Repair presence configuration
+   service: roost_scheduler.repair_presence_configuration
+   data:
+     remove_invalid_entities: true
+     fix_rule_conflicts: true
+     update_timeout_values: true
+   
+   # Repair buffer configuration
+   service: roost_scheduler.repair_buffer_configuration
+   data:
+     fix_invalid_values: true
+     remove_orphaned_overrides: true
+     validate_entity_mappings: true
+   ```
+
+3. **Validate Repairs:**
+   ```yaml
+   service: roost_scheduler.validate_repairs
+   data:
+     test_functionality: true
+     verify_persistence: true
+   ```
+
+**Common Configuration Issues and Fixes:**
+
+| Issue | Symptoms | Automatic Fix | Manual Fix |
+|-------|----------|---------------|------------|
+| Invalid entity references | Entities not found errors | Remove invalid entities | Update entity IDs |
+| Corrupted presence rules | Presence detection not working | Reset to default rule | Reconfigure presence settings |
+| Buffer values out of range | Buffer not working correctly | Clamp to valid range | Set appropriate values |
+| Storage version mismatch | Migration errors | Trigger re-migration | Reset configuration |
+| Missing configuration fields | Partial functionality | Add default values | Complete configuration |
+
+**Configuration Backup and Restore:**
+
+```yaml
+# Create configuration backup before making changes
+service: roost_scheduler.backup_configuration
+data:
+  include_schedules: true
+  include_manager_configs: true
+  backup_name: "pre_repair_backup"
+
+# Restore from backup if repairs fail
+service: roost_scheduler.restore_configuration
+data:
+  backup_name: "pre_repair_backup"
+  validate_after_restore: true
+```
+
 ### Monitoring Setup
 
 ```yaml
-# Set up monitoring automation
+# Set up monitoring automation with enhanced error detection
 automation:
   - alias: "Roost Scheduler Health Check"
     trigger:
@@ -514,6 +896,8 @@ automation:
       - service: roost_scheduler.run_diagnostics
         data:
           notify_on_issues: true
+          include_manager_status: true
+          include_configuration_validation: true
           
   - alias: "Roost Scheduler Error Alert"
     trigger:
@@ -526,6 +910,16 @@ automation:
       - service: notify.admin
         data:
           message: "Roost Scheduler error: {{ trigger.event.data.message }}"
+          
+  - alias: "Roost Scheduler Configuration Issue Alert"
+    trigger:
+      - platform: event
+        event_type: roost_scheduler_configuration_issue
+    action:
+      - service: roost_scheduler.validate_and_repair_configuration
+        data:
+          auto_repair: true
+          notify_on_completion: true
 ```
 
 This comprehensive troubleshooting guide should help users diagnose and resolve most issues they encounter with the Roost Scheduler integration.
