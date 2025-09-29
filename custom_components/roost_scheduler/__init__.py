@@ -318,6 +318,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             setup_diagnostics["warnings"].append(f"Setup validation failed: {str(e)}")
             # Validation failures are warnings, not critical errors
         
+        # Process setup feedback if available from config flow
+        try:
+            from .setup_feedback import SetupFeedbackManager
+            
+            setup_feedback_data = entry.data.get("setup_feedback")
+            if setup_feedback_data:
+                feedback_manager = SetupFeedbackManager(hass)
+                
+                # Update feedback data with actual setup results
+                updated_feedback = feedback_manager.create_setup_feedback_data(
+                    success=True,  # Setup succeeded if we got this far
+                    dashboard_integration_status=setup_feedback_data.get("dashboard_integration_status", False),
+                    card_registered="frontend_resources" in setup_diagnostics["components_initialized"],
+                    card_added_to_dashboard=setup_feedback_data.get("card_added_to_dashboard", False),
+                    dashboard_id=setup_feedback_data.get("dashboard_id"),
+                    error_messages=setup_feedback_data.get("error_messages", []),
+                    warning_messages=setup_feedback_data.get("warning_messages", []) + setup_diagnostics.get("warnings", [])
+                )
+                
+                # Log the final setup feedback
+                feedback_manager.log_setup_completion(updated_feedback)
+                
+                # Store updated feedback in entry data for potential future use
+                hass.data[DOMAIN][entry.entry_id]["setup_feedback"] = updated_feedback
+                
+                _LOGGER.info("Setup feedback processed for entry %s", entry.entry_id)
+            else:
+                _LOGGER.debug("No setup feedback data found in config entry %s", entry.entry_id)
+                
+        except Exception as e:
+            _LOGGER.warning("Failed to process setup feedback for entry %s: %s", entry.entry_id, e)
+            # Setup feedback processing failure is not critical
+        
         # Log setup summary
         setup_diagnostics["end_time"] = datetime.now()
         setup_diagnostics["duration_seconds"] = (setup_diagnostics["end_time"] - setup_diagnostics["start_time"]).total_seconds()

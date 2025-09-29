@@ -20,6 +20,7 @@ from .models import PresenceConfig, GlobalBufferConfig, ScheduleData
 from .presence_manager import PresenceManager
 from .buffer_manager import BufferManager
 from .dashboard_service import DashboardIntegrationService
+from .setup_feedback import SetupFeedbackManager
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -213,6 +214,9 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             
             # Attempt automatic card installation if requested
             installation_result = None
+            error_messages = []
+            warning_messages = []
+            
             if self._add_card:
                 try:
                     dashboard_service = DashboardIntegrationService(self.hass)
@@ -231,10 +235,12 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         })
                     else:
                         _LOGGER.warning("Automatic card installation failed: %s", installation_result.error_message)
+                        warning_messages.append(f"Automatic card installation failed: {installation_result.error_message}")
                         # Continue with setup - card installation failure shouldn't block integration
                         
                 except Exception as err:
                     _LOGGER.error("Failed to install card automatically: %s", err)
+                    error_messages.append(f"Card installation error: {str(err)}")
                     # Continue anyway - card installation is optional
             
             # Try to validate manager initialization with the configuration
@@ -244,12 +250,47 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("Failed to validate manager initialization: %s", err)
                 # Continue anyway - this validation is optional and managers will be initialized during integration setup
             
-            # Create entry with success/failure feedback
-            if self._add_card and installation_result:
-                if installation_result.success:
-                    title = f"{NAME} - Card Added Successfully"
-                else:
-                    title = f"{NAME} - Manual Card Setup Required"
+            # Generate setup feedback using SetupFeedbackManager
+            feedback_manager = SetupFeedbackManager(self.hass)
+            
+            # Determine setup status
+            setup_success = True
+            dashboard_integration_status = installation_result and installation_result.success if self._add_card else False
+            card_registered = True  # Assume card registration will succeed during integration setup
+            card_added_to_dashboard = dashboard_integration_status
+            dashboard_id = installation_result.dashboard_id if installation_result and installation_result.success else None
+            
+            # Create feedback data
+            feedback_data = feedback_manager.create_setup_feedback_data(
+                success=setup_success,
+                dashboard_integration_status=dashboard_integration_status,
+                card_registered=card_registered,
+                card_added_to_dashboard=card_added_to_dashboard,
+                dashboard_id=dashboard_id,
+                error_messages=error_messages,
+                warning_messages=warning_messages
+            )
+            
+            # Log setup completion
+            feedback_manager.log_setup_completion(feedback_data)
+            
+            # Store feedback data in config for use during integration setup
+            config_data["setup_feedback"] = {
+                "success": feedback_data.success,
+                "dashboard_integration_status": feedback_data.dashboard_integration_status,
+                "card_registered": feedback_data.card_registered,
+                "card_added_to_dashboard": feedback_data.card_added_to_dashboard,
+                "dashboard_id": feedback_data.dashboard_id,
+                "error_messages": feedback_data.error_messages,
+                "warning_messages": feedback_data.warning_messages,
+                "next_steps": feedback_data.next_steps
+            }
+            
+            # Create entry with appropriate title based on feedback
+            if feedback_data.dashboard_integration_status and feedback_data.card_added_to_dashboard:
+                title = f"{NAME} - Setup Complete"
+            elif feedback_data.warning_messages or feedback_data.error_messages:
+                title = f"{NAME} - Setup Complete (Manual Steps Required)"
             else:
                 title = NAME
             
