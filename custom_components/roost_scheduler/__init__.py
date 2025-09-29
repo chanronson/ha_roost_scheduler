@@ -222,6 +222,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             setup_diagnostics["warnings"].append(f"Configuration validation failed: {str(e)}")
             # Continue setup even if validation fails - not critical
         
+        # Initialize dashboard integration service with comprehensive error handling
+        dashboard_service = None
+        try:
+            _LOGGER.info("Initializing dashboard integration service for entry %s", entry.entry_id)
+            from .dashboard_service import DashboardIntegrationService
+            dashboard_service = DashboardIntegrationService(hass)
+            dashboard_integration_status["dashboard_service_initialized"] = True
+            setup_diagnostics["components_initialized"].append("dashboard_service")
+            _LOGGER.debug("Dashboard integration service initialized successfully")
+            
+        except Exception as e:
+            error_msg = f"Failed to initialize dashboard integration service: {str(e)}"
+            _LOGGER.error(error_msg, exc_info=True)
+            setup_diagnostics["components_failed"].append({"component": "dashboard_service", "error": str(e)})
+            setup_diagnostics["warnings"].append("Dashboard integration service failed - automatic card installation unavailable")
+            dashboard_integration_status["dashboard_errors"].append(error_msg)
+            dashboard_integration_status["troubleshooting_steps"].extend([
+                "Check Lovelace configuration for any conflicts",
+                "Verify dashboard permissions allow modifications",
+                "Try manually adding the card through dashboard edit mode"
+            ])
+            # Continue setup even if dashboard service fails - not critical for core functionality
+
         # Store services in hass.data
         hass.data.setdefault(DOMAIN, {})
         hass.data[DOMAIN][entry.entry_id] = {
@@ -231,8 +254,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "buffer_manager": buffer_manager,
             "logging_manager": logging_manager,
             "config_validator": config_validator,
-            "frontend_manager": None,  # Will be set after frontend resource registration
+            "frontend_manager": frontend_manager,
+            "dashboard_service": dashboard_service,
             "setup_diagnostics": setup_diagnostics,
+            "dashboard_integration_status": dashboard_integration_status,
         }
         
         # Load existing schedules with error handling
@@ -244,10 +269,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             setup_diagnostics["warnings"].append(f"Schedule loading failed: {str(e)}")
             # Continue setup even if schedule loading fails - will use defaults
         
-        # Register frontend resources with error handling
+        # Register frontend resources with comprehensive error handling and diagnostics
         # This must happen after storage service initialization but before WebSocket handlers
         frontend_manager = None
+        dashboard_integration_status = {
+            "frontend_resources_registered": False,
+            "card_available_in_picker": False,
+            "dashboard_service_initialized": False,
+            "card_added_to_dashboard": False,
+            "dashboard_id": None,
+            "frontend_errors": [],
+            "dashboard_errors": [],
+            "troubleshooting_steps": []
+        }
+        
         try:
+            _LOGGER.info("Starting frontend resource registration for entry %s", entry.entry_id)
             from .frontend_manager import FrontendResourceManager
             frontend_manager = FrontendResourceManager(hass)
             frontend_registration_result = await frontend_manager.register_frontend_resources()
@@ -255,34 +292,65 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Store frontend manager in entry data
             hass.data[DOMAIN][entry.entry_id]["frontend_manager"] = frontend_manager
             
+            # Log detailed frontend registration results
+            _LOGGER.debug("Frontend registration result for entry %s: %s", entry.entry_id, frontend_registration_result)
+            
             if frontend_registration_result["success"]:
                 setup_diagnostics["components_initialized"].append("frontend_resources")
+                dashboard_integration_status["frontend_resources_registered"] = True
+                dashboard_integration_status["card_available_in_picker"] = True
+                
                 _LOGGER.info("Successfully registered frontend resources for entry %s: %s", 
                            entry.entry_id, [r["resource"] for r in frontend_registration_result["resources_registered"]])
+                
+                # Log resource-specific details
+                for resource in frontend_registration_result["resources_registered"]:
+                    _LOGGER.debug("Registered resource: %s (fallback: %s, retries: %d)", 
+                                resource.get("resource", "unknown"),
+                                resource.get("fallback_used", False),
+                                resource.get("retry_count", 0))
                 
                 # Log any warnings
                 if frontend_registration_result["warnings"]:
                     for warning in frontend_registration_result["warnings"]:
                         setup_diagnostics["warnings"].append(f"Frontend resource warning: {warning}")
+                        dashboard_integration_status["frontend_errors"].append(f"Warning: {warning}")
                         _LOGGER.warning("Frontend resource warning: %s", warning)
             else:
                 setup_diagnostics["components_failed"].append({"component": "frontend_resources", "error": "Frontend resource registration failed"})
                 setup_diagnostics["warnings"].append("Frontend resources failed to register - card may not appear in dashboard picker")
-                _LOGGER.warning("Frontend resource registration failed for entry %s. Failed resources: %s", 
+                dashboard_integration_status["frontend_resources_registered"] = False
+                
+                _LOGGER.error("Frontend resource registration failed for entry %s. Failed resources: %s", 
                               entry.entry_id, frontend_registration_result["resources_failed"])
                 
                 # Log specific errors for troubleshooting
                 for failed_resource in frontend_registration_result["resources_failed"]:
-                    _LOGGER.error("Failed to register resource %s: %s", 
-                                failed_resource.get("resource", "unknown"), 
-                                failed_resource.get("error", "unknown error"))
+                    error_msg = f"Failed to register resource {failed_resource.get('resource', 'unknown')}: {failed_resource.get('error', 'unknown error')}"
+                    _LOGGER.error(error_msg)
+                    dashboard_integration_status["frontend_errors"].append(error_msg)
+                
+                # Add troubleshooting steps for frontend failures
+                dashboard_integration_status["troubleshooting_steps"].extend([
+                    "Check that card files exist in www/roost-scheduler-card/",
+                    "Verify file permissions allow Home Assistant to read card files",
+                    "Clear browser cache and refresh the page",
+                    "Check browser console for JavaScript errors"
+                ])
                 
                 # Continue setup even if frontend registration fails - not critical for core functionality
                 
         except Exception as e:
-            _LOGGER.warning("Failed to initialize frontend resource manager for entry %s: %s", entry.entry_id, e)
+            error_msg = f"Failed to initialize frontend resource manager for entry {entry.entry_id}: {str(e)}"
+            _LOGGER.error(error_msg, exc_info=True)
             setup_diagnostics["components_failed"].append({"component": "frontend_resources", "error": str(e)})
             setup_diagnostics["warnings"].append("Frontend resource manager initialization failed - card may not be available")
+            dashboard_integration_status["frontend_errors"].append(error_msg)
+            dashboard_integration_status["troubleshooting_steps"].extend([
+                "Check Home Assistant logs for detailed error messages",
+                "Verify frontend component is properly loaded",
+                "Try restarting Home Assistant"
+            ])
             # Continue setup even if frontend registration fails - not critical for core functionality
         
         # Register services with error handling
@@ -308,47 +376,108 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             setup_diagnostics["warnings"].append("WebSocket handlers failed - real-time updates unavailable")
             # WebSocket failures are not critical - continue without real-time updates
         
-        # Final setup validation with comprehensive checks
+        # Final setup validation with comprehensive checks including dashboard integration
         try:
-            validation_results = await _validate_setup(hass, entry)
+            validation_results = await _validate_setup(hass, entry, dashboard_integration_status)
             setup_diagnostics["validation_results"] = validation_results
-            _LOGGER.info("Setup validation completed successfully for entry %s", entry.entry_id)
+            
+            # Log validation results with dashboard integration details
+            _LOGGER.info("Setup validation completed for entry %s with status: %s", 
+                        entry.entry_id, validation_results.get("overall_status", "unknown"))
+            
+            if validation_results.get("dashboard_integration_validated"):
+                _LOGGER.info("Dashboard integration validation passed")
+            else:
+                _LOGGER.warning("Dashboard integration validation failed or incomplete")
+                
         except Exception as e:
-            _LOGGER.warning("Setup validation failed for entry %s: %s", entry.entry_id, e)
+            _LOGGER.error("Setup validation failed for entry %s: %s", entry.entry_id, e, exc_info=True)
             setup_diagnostics["warnings"].append(f"Setup validation failed: {str(e)}")
             # Validation failures are warnings, not critical errors
         
-        # Process setup feedback if available from config flow
+        # Process setup feedback with comprehensive dashboard integration status
         try:
             from .setup_feedback import SetupFeedbackManager
             
-            setup_feedback_data = entry.data.get("setup_feedback")
-            if setup_feedback_data:
-                feedback_manager = SetupFeedbackManager(hass)
-                
-                # Update feedback data with actual setup results
-                updated_feedback = feedback_manager.create_setup_feedback_data(
-                    success=True,  # Setup succeeded if we got this far
-                    dashboard_integration_status=setup_feedback_data.get("dashboard_integration_status", False),
-                    card_registered="frontend_resources" in setup_diagnostics["components_initialized"],
-                    card_added_to_dashboard=setup_feedback_data.get("card_added_to_dashboard", False),
-                    dashboard_id=setup_feedback_data.get("dashboard_id"),
-                    error_messages=setup_feedback_data.get("error_messages", []),
-                    warning_messages=setup_feedback_data.get("warning_messages", []) + setup_diagnostics.get("warnings", [])
-                )
-                
-                # Log the final setup feedback
-                feedback_manager.log_setup_completion(updated_feedback)
-                
-                # Store updated feedback in entry data for potential future use
-                hass.data[DOMAIN][entry.entry_id]["setup_feedback"] = updated_feedback
-                
-                _LOGGER.info("Setup feedback processed for entry %s", entry.entry_id)
-            else:
-                _LOGGER.debug("No setup feedback data found in config entry %s", entry.entry_id)
+            feedback_manager = SetupFeedbackManager(hass)
+            setup_feedback_data = entry.data.get("setup_feedback", {})
+            
+            # Determine overall dashboard integration success
+            dashboard_integration_success = (
+                dashboard_integration_status["frontend_resources_registered"] and
+                dashboard_integration_status["dashboard_service_initialized"]
+            )
+            
+            # Collect all error messages
+            all_error_messages = []
+            all_error_messages.extend(dashboard_integration_status.get("frontend_errors", []))
+            all_error_messages.extend(dashboard_integration_status.get("dashboard_errors", []))
+            all_error_messages.extend(setup_feedback_data.get("error_messages", []))
+            
+            # Collect all warning messages
+            all_warning_messages = []
+            all_warning_messages.extend(setup_diagnostics.get("warnings", []))
+            all_warning_messages.extend(setup_feedback_data.get("warning_messages", []))
+            
+            # Generate troubleshooting information for dashboard integration issues
+            troubleshooting_info = generate_dashboard_troubleshooting_info(
+                dashboard_integration_status, setup_diagnostics
+            )
+            
+            # Create comprehensive feedback data
+            updated_feedback = feedback_manager.create_setup_feedback_data(
+                success=True,  # Setup succeeded if we got this far
+                dashboard_integration_status=dashboard_integration_success,
+                card_registered=dashboard_integration_status["frontend_resources_registered"],
+                card_added_to_dashboard=dashboard_integration_status.get("card_added_to_dashboard", False),
+                dashboard_id=dashboard_integration_status.get("dashboard_id"),
+                error_messages=all_error_messages,
+                warning_messages=all_warning_messages
+            )
+            
+            # Add troubleshooting information to feedback
+            updated_feedback.troubleshooting_info.update(troubleshooting_info)
+            
+            # Log comprehensive setup feedback with dashboard integration details
+            _LOGGER.info("=== Dashboard Integration Status for Entry %s ===", entry.entry_id)
+            _LOGGER.info("Frontend resources registered: %s", dashboard_integration_status["frontend_resources_registered"])
+            _LOGGER.info("Card available in picker: %s", dashboard_integration_status["card_available_in_picker"])
+            _LOGGER.info("Dashboard service initialized: %s", dashboard_integration_status["dashboard_service_initialized"])
+            _LOGGER.info("Card added to dashboard: %s", dashboard_integration_status["card_added_to_dashboard"])
+            
+            if dashboard_integration_status["dashboard_id"]:
+                _LOGGER.info("Dashboard ID: %s", dashboard_integration_status["dashboard_id"])
+            
+            if dashboard_integration_status["frontend_errors"]:
+                _LOGGER.warning("Frontend errors: %s", dashboard_integration_status["frontend_errors"])
+            
+            if dashboard_integration_status["dashboard_errors"]:
+                _LOGGER.warning("Dashboard errors: %s", dashboard_integration_status["dashboard_errors"])
+            
+            if dashboard_integration_status["troubleshooting_steps"]:
+                _LOGGER.info("Troubleshooting steps available: %d", len(dashboard_integration_status["troubleshooting_steps"]))
+                for i, step in enumerate(dashboard_integration_status["troubleshooting_steps"], 1):
+                    _LOGGER.debug("  %d. %s", i, step)
+            
+            # Log troubleshooting scenario information
+            if troubleshooting_info["scenario"] != "success":
+                _LOGGER.warning("Dashboard integration troubleshooting scenario: %s", troubleshooting_info["scenario"])
+                _LOGGER.warning("Description: %s", troubleshooting_info["description"])
+                if troubleshooting_info["manual_installation_required"]:
+                    _LOGGER.warning("Manual installation required - see troubleshooting steps")
+            
+            _LOGGER.info("=== End Dashboard Integration Status ===")
+            
+            # Log the final setup feedback
+            feedback_manager.log_setup_completion(updated_feedback)
+            
+            # Store updated feedback in entry data for potential future use
+            hass.data[DOMAIN][entry.entry_id]["setup_feedback"] = updated_feedback
+            
+            _LOGGER.info("Setup feedback processed for entry %s with dashboard integration status", entry.entry_id)
                 
         except Exception as e:
-            _LOGGER.warning("Failed to process setup feedback for entry %s: %s", entry.entry_id, e)
+            _LOGGER.error("Failed to process setup feedback for entry %s: %s", entry.entry_id, e, exc_info=True)
             # Setup feedback processing failure is not critical
         
         # Log setup summary
@@ -898,7 +1027,7 @@ async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> dict:
 
 
 def _log_setup_summary(setup_diagnostics: dict) -> None:
-    """Log a comprehensive setup summary."""
+    """Log a comprehensive setup summary including dashboard integration status."""
     entry_id = setup_diagnostics["entry_id"]
     duration = setup_diagnostics["duration_seconds"]
     
@@ -920,11 +1049,30 @@ def _log_setup_summary(setup_diagnostics: dict) -> None:
         for warning in setup_diagnostics["warnings"]:
             _LOGGER.warning("  - %s", warning)
     
+    # Log dashboard integration summary
+    dashboard_components = [comp for comp in setup_diagnostics["components_initialized"] 
+                          if comp in ["frontend_resources", "dashboard_service"]]
+    dashboard_failures = [comp for comp in setup_diagnostics["components_failed"] 
+                         if comp.get("component") in ["frontend_resources", "dashboard_service"]]
+    
+    if dashboard_components or dashboard_failures:
+        _LOGGER.info("Dashboard Integration Summary:")
+        if dashboard_components:
+            _LOGGER.info("  ✓ Initialized: %s", ", ".join(dashboard_components))
+        if dashboard_failures:
+            _LOGGER.warning("  ✗ Failed: %s", 
+                          ", ".join([f"{c['component']} ({c['error']})" for c in dashboard_failures]))
+    
     if "validation_results" in setup_diagnostics:
         validation = setup_diagnostics["validation_results"]
-        _LOGGER.info("Validation Status: %s", validation["overall_status"])
+        _LOGGER.info("Validation Status: %s", validation.get("overall_status", "unknown"))
         
-        if validation["functionality_tests"]:
+        # Log dashboard integration validation specifically
+        if validation.get("dashboard_integration_validated") is not None:
+            status = "✓ Passed" if validation["dashboard_integration_validated"] else "✗ Failed"
+            _LOGGER.info("Dashboard Integration Validation: %s", status)
+        
+        if validation.get("functionality_tests"):
             passed_tests = [t for t in validation["functionality_tests"] if t["status"] == "passed"]
             failed_tests = [t for t in validation["functionality_tests"] if t["status"] == "failed"]
             
@@ -960,11 +1108,26 @@ def _log_setup_failure(setup_diagnostics: dict) -> None:
         _LOGGER.error("Critical Error: %s", setup_diagnostics["critical_error"])
     
     _LOGGER.error("=== Troubleshooting Suggestions ===")
+    _LOGGER.error("General Issues:")
     _LOGGER.error("1. Check Home Assistant logs for detailed error messages")
     _LOGGER.error("2. Verify all required dependencies are installed")
     _LOGGER.error("3. Check storage permissions and disk space")
     _LOGGER.error("4. Try removing and re-adding the integration")
-    _LOGGER.error("5. Report this issue with the full log output")
+    
+    # Add dashboard-specific troubleshooting if dashboard components failed
+    dashboard_failures = [comp for comp in setup_diagnostics.get("components_failed", []) 
+                         if comp.get("component") in ["frontend_resources", "dashboard_service"]]
+    
+    if dashboard_failures:
+        _LOGGER.error("Dashboard Integration Issues:")
+        _LOGGER.error("5. Check that card files exist in www/roost-scheduler-card/")
+        _LOGGER.error("6. Verify file permissions allow Home Assistant to read card files")
+        _LOGGER.error("7. Clear browser cache and refresh the page")
+        _LOGGER.error("8. Check browser console for JavaScript errors")
+        _LOGGER.error("9. Try manually adding the card through dashboard edit mode")
+        _LOGGER.error("10. Verify Lovelace configuration for any conflicts")
+    
+    _LOGGER.error("11. Report this issue with the full log output")
     _LOGGER.error("=== End Setup Failure Report ===")
 
 
@@ -994,8 +1157,14 @@ async def get_setup_diagnostics(hass: HomeAssistant, entry_id: str) -> dict:
         if "setup_diagnostics" in entry_data:
             diagnostics["setup_history"] = entry_data["setup_diagnostics"]
         
+        # Get dashboard integration status if available
+        if "dashboard_integration_status" in entry_data:
+            diagnostics["dashboard_integration"] = entry_data["dashboard_integration_status"]
+        
         # Check component status
         required_components = ["storage_service", "schedule_manager", "presence_manager", "buffer_manager"]
+        optional_components = ["frontend_manager", "dashboard_service"]
+        
         for component in required_components:
             if component in entry_data and entry_data[component] is not None:
                 diagnostics["components"][component] = "initialized"
@@ -1009,6 +1178,26 @@ async def get_setup_diagnostics(hass: HomeAssistant, entry_id: str) -> dict:
             else:
                 diagnostics["components"][component] = "missing"
                 diagnostics["recommendations"].append(f"Component {component} is missing - integration may not function properly")
+        
+        # Check optional dashboard components
+        for component in optional_components:
+            if component in entry_data and entry_data[component] is not None:
+                diagnostics["components"][component] = "initialized"
+                
+                # Get dashboard-specific diagnostics
+                try:
+                    if component == "frontend_manager" and hasattr(entry_data[component], 'get_registration_status'):
+                        diagnostics["components"]["frontend_registration_status"] = entry_data[component].get_registration_status()
+                    elif hasattr(entry_data[component], 'get_diagnostics'):
+                        diagnostics["components"][f"{component}_details"] = await entry_data[component].get_diagnostics()
+                except Exception as e:
+                    diagnostics["components"][f"{component}_diagnostics_error"] = str(e)
+            else:
+                diagnostics["components"][component] = "missing"
+                if component == "frontend_manager":
+                    diagnostics["recommendations"].append("Frontend manager missing - card may not appear in dashboard picker")
+                elif component == "dashboard_service":
+                    diagnostics["recommendations"].append("Dashboard service missing - automatic card installation unavailable")
         
         # Get configuration information
         try:
@@ -1040,9 +1229,24 @@ async def get_setup_diagnostics(hass: HomeAssistant, entry_id: str) -> dict:
             diagnostics["recommendations"].append("No services registered - integration may not be functioning")
         
         missing_components = [comp for comp, status in diagnostics["components"].items() 
-                            if status == "missing" and not comp.endswith("_details") and not comp.endswith("_error")]
+                            if status == "missing" and not comp.endswith("_details") and not comp.endswith("_error") and not comp.endswith("_status")]
         if missing_components:
             diagnostics["recommendations"].append(f"Missing components: {', '.join(missing_components)}")
+        
+        # Add dashboard-specific recommendations
+        dashboard_issues = []
+        if diagnostics["components"].get("frontend_manager") == "missing":
+            dashboard_issues.append("frontend resources not registered")
+        if diagnostics["components"].get("dashboard_service") == "missing":
+            dashboard_issues.append("dashboard service not available")
+        
+        if dashboard_issues:
+            diagnostics["recommendations"].append(f"Dashboard integration issues: {', '.join(dashboard_issues)}")
+            diagnostics["recommendations"].extend([
+                "Try manually adding the Roost Scheduler card through dashboard edit mode",
+                "Check browser console for JavaScript errors",
+                "Verify card files exist in www/roost-scheduler-card/"
+            ])
         
     except Exception as e:
         diagnostics["error"] = str(e)
@@ -1050,6 +1254,164 @@ async def get_setup_diagnostics(hass: HomeAssistant, entry_id: str) -> dict:
         diagnostics["recommendations"].append("Critical error getting diagnostics - check logs for details")
     
     return diagnostics
+
+
+def generate_dashboard_troubleshooting_info(
+    dashboard_integration_status: dict,
+    setup_diagnostics: dict
+) -> Dict[str, Any]:
+    """Generate troubleshooting information for dashboard integration issues.
+    
+    Args:
+        dashboard_integration_status: Dashboard integration status from setup
+        setup_diagnostics: General setup diagnostics
+        
+    Returns:
+        Dictionary containing troubleshooting information and steps
+    """
+    troubleshooting_info = {
+        "scenario": "unknown",
+        "description": "",
+        "likely_causes": [],
+        "troubleshooting_steps": [],
+        "manual_installation_required": False,
+        "severity": "info"
+    }
+    
+    try:
+        # Determine the failure scenario
+        frontend_registered = dashboard_integration_status.get("frontend_resources_registered", False)
+        dashboard_service_ok = dashboard_integration_status.get("dashboard_service_initialized", False)
+        card_added = dashboard_integration_status.get("card_added_to_dashboard", False)
+        
+        if not frontend_registered and not dashboard_service_ok:
+            # Complete dashboard integration failure
+            troubleshooting_info.update({
+                "scenario": "complete_dashboard_failure",
+                "description": "Both frontend resource registration and dashboard service initialization failed",
+                "likely_causes": [
+                    "Card files missing or corrupted",
+                    "File permission issues",
+                    "Home Assistant frontend component not available",
+                    "Lovelace configuration conflicts"
+                ],
+                "troubleshooting_steps": [
+                    "Verify card files exist in config/www/roost-scheduler-card/",
+                    "Check file permissions (should be readable by Home Assistant)",
+                    "Restart Home Assistant to reload frontend resources",
+                    "Check Home Assistant logs for specific error messages",
+                    "Try manually copying card files to www/roost-scheduler-card/",
+                    "Clear browser cache and refresh the page"
+                ],
+                "manual_installation_required": True,
+                "severity": "error"
+            })
+            
+        elif not frontend_registered:
+            # Frontend resource registration failed
+            troubleshooting_info.update({
+                "scenario": "frontend_registration_failure",
+                "description": "Frontend resources failed to register - card won't appear in dashboard picker",
+                "likely_causes": [
+                    "Card JavaScript file missing or corrupted",
+                    "File permission issues",
+                    "Home Assistant frontend API changes",
+                    "Browser caching issues"
+                ],
+                "troubleshooting_steps": [
+                    "Check that roost-scheduler-card.js exists in www/roost-scheduler-card/",
+                    "Verify file permissions allow Home Assistant to read the file",
+                    "Check browser console for JavaScript errors",
+                    "Clear browser cache and hard refresh (Ctrl+F5)",
+                    "Try restarting Home Assistant",
+                    "Check Home Assistant version compatibility"
+                ],
+                "manual_installation_required": True,
+                "severity": "warning"
+            })
+            
+        elif not dashboard_service_ok:
+            # Dashboard service initialization failed
+            troubleshooting_info.update({
+                "scenario": "dashboard_service_failure",
+                "description": "Dashboard service failed to initialize - automatic card installation unavailable",
+                "likely_causes": [
+                    "Lovelace configuration access issues",
+                    "Dashboard permissions problems",
+                    "Storage system conflicts"
+                ],
+                "troubleshooting_steps": [
+                    "Check Lovelace configuration for any syntax errors",
+                    "Verify dashboard is accessible and editable",
+                    "Try manually adding the card through dashboard edit mode",
+                    "Check Home Assistant storage permissions",
+                    "Review Home Assistant logs for dashboard-related errors"
+                ],
+                "manual_installation_required": False,
+                "severity": "info"
+            })
+            
+        elif not card_added:
+            # Card registration OK but not added to dashboard
+            troubleshooting_info.update({
+                "scenario": "card_not_added",
+                "description": "Card is available in picker but wasn't automatically added to dashboard",
+                "likely_causes": [
+                    "Dashboard modification permissions",
+                    "Multiple dashboard configurations",
+                    "User preference for manual card placement"
+                ],
+                "troubleshooting_steps": [
+                    "Go to your dashboard and click 'Edit Dashboard'",
+                    "Click 'Add Card' and search for 'Roost Scheduler'",
+                    "Add the card to your preferred location",
+                    "Configure card settings as needed"
+                ],
+                "manual_installation_required": False,
+                "severity": "info"
+            })
+            
+        else:
+            # Everything appears to be working
+            troubleshooting_info.update({
+                "scenario": "success",
+                "description": "Dashboard integration completed successfully",
+                "likely_causes": [],
+                "troubleshooting_steps": [
+                    "Navigate to your dashboard to access the Roost Scheduler card",
+                    "Start creating your heating schedules"
+                ],
+                "manual_installation_required": False,
+                "severity": "info"
+            })
+        
+        # Add common troubleshooting steps for all scenarios
+        if troubleshooting_info["severity"] in ["warning", "error"]:
+            troubleshooting_info["troubleshooting_steps"].extend([
+                "Check the integration documentation for manual installation instructions",
+                "Report persistent issues with full log output to the support forum"
+            ])
+        
+        # Add specific error messages if available
+        frontend_errors = dashboard_integration_status.get("frontend_errors", [])
+        dashboard_errors = dashboard_integration_status.get("dashboard_errors", [])
+        
+        if frontend_errors or dashboard_errors:
+            troubleshooting_info["error_details"] = {
+                "frontend_errors": frontend_errors,
+                "dashboard_errors": dashboard_errors
+            }
+        
+    except Exception as e:
+        _LOGGER.error("Error generating dashboard troubleshooting info: %s", str(e))
+        troubleshooting_info.update({
+            "scenario": "troubleshooting_error",
+            "description": f"Error generating troubleshooting information: {str(e)}",
+            "troubleshooting_steps": ["Check Home Assistant logs for detailed error information"],
+            "severity": "error"
+        })
+    
+    return troubleshooting_info
 
 def _log_setup_summary(setup_diagnostics: dict) -> None:
     """Log a comprehensive setup summary."""
@@ -1111,8 +1473,8 @@ def _log_setup_failure(setup_diagnostics: dict) -> None:
     _LOGGER.error("Check the logs above for specific error details and troubleshooting information")
 
 
-async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> dict:
-    """Validate that the setup completed successfully with comprehensive checks."""
+async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry, dashboard_integration_status: dict = None) -> dict:
+    """Validate that the setup completed successfully with comprehensive checks including dashboard integration."""
     validation_results = {
         "entry_data_valid": False,
         "managers_initialized": False,
@@ -1120,6 +1482,9 @@ async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         "websocket_handlers_registered": False,
         "storage_accessible": False,
         "configuration_valid": False,
+        "dashboard_integration_validated": False,
+        "frontend_resources_available": False,
+        "dashboard_service_available": False,
         "issues": [],
         "recommendations": []
     }
@@ -1178,19 +1543,66 @@ async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry) -> dict:
         # Check WebSocket handlers (this is harder to validate directly)
         validation_results["websocket_handlers_registered"] = True  # Assume OK if no errors during registration
         
-        # Generate recommendations based on issues
-        if validation_results["issues"]:
-            validation_results["recommendations"].append("Check the setup logs for specific error details")
-            validation_results["recommendations"].append("Try restarting Home Assistant if issues persist")
-            validation_results["recommendations"].append("Check Home Assistant storage permissions and disk space")
+        # Validate dashboard integration components
+        if dashboard_integration_status:
+            validation_results["frontend_resources_available"] = dashboard_integration_status.get("frontend_resources_registered", False)
+            validation_results["dashboard_service_available"] = dashboard_integration_status.get("dashboard_service_initialized", False)
+            
+            # Overall dashboard integration validation
+            validation_results["dashboard_integration_validated"] = (
+                validation_results["frontend_resources_available"] and
+                validation_results["dashboard_service_available"]
+            )
+            
+            # Add dashboard-specific issues and recommendations
+            if not validation_results["frontend_resources_available"]:
+                validation_results["issues"].append("Frontend resources not properly registered - card may not appear in dashboard picker")
+                validation_results["recommendations"].extend([
+                    "Check that card files exist in www/roost-scheduler-card/",
+                    "Verify file permissions allow Home Assistant to read card files",
+                    "Clear browser cache and refresh the page"
+                ])
+            
+            if not validation_results["dashboard_service_available"]:
+                validation_results["issues"].append("Dashboard service not initialized - automatic card installation unavailable")
+                validation_results["recommendations"].extend([
+                    "Check Lovelace configuration for any conflicts",
+                    "Try manually adding the card through dashboard edit mode"
+                ])
+            
+            # Log dashboard integration validation results
+            _LOGGER.debug("Dashboard integration validation - Frontend: %s, Service: %s, Overall: %s",
+                         validation_results["frontend_resources_available"],
+                         validation_results["dashboard_service_available"],
+                         validation_results["dashboard_integration_validated"])
+        else:
+            _LOGGER.warning("Dashboard integration status not available for validation")
+            validation_results["issues"].append("Dashboard integration status not available")
         
-        # Overall validation status
+        # Generate general recommendations based on issues
+        if validation_results["issues"]:
+            validation_results["recommendations"].extend([
+                "Check the setup logs for specific error details",
+                "Try restarting Home Assistant if issues persist",
+                "Check Home Assistant storage permissions and disk space"
+            ])
+        
+        # Overall validation status (dashboard integration is not critical for core functionality)
         validation_results["overall_valid"] = (
             validation_results["entry_data_valid"] and
             validation_results["managers_initialized"] and
             validation_results["services_registered"] and
             validation_results["storage_accessible"]
         )
+        
+        # Determine overall status with dashboard integration consideration
+        if validation_results["overall_valid"]:
+            if validation_results.get("dashboard_integration_validated", False):
+                validation_results["overall_status"] = "passed"
+            else:
+                validation_results["overall_status"] = "passed_with_dashboard_issues"
+        else:
+            validation_results["overall_status"] = "failed"
         
     except Exception as e:
         validation_results["issues"].append(f"Validation process failed: {str(e)}")
