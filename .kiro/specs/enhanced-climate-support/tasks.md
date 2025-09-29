@@ -10,6 +10,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Add comprehensive validation logic for climate entities
   - Write unit tests covering all attribute detection scenarios
   - Test with mock entities having different temperature attribute configurations
+  - Commit changes with descriptive commit message
   - _Requirements: 1.1, 1.2, 1.3, 1.4_
 
 - [ ] 2. Implement Attribute Mapping System
@@ -18,6 +19,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Add methods for storing, retrieving, updating, and removing entity mappings
   - Integrate with existing storage service for persistence
   - Write unit tests for all mapping operations and edge cases
+  - Commit changes with descriptive commit message
   - _Requirements: 1.4, 3.2, 8.2_
 
 - [ ] 3. Enhance Schedule Manager with flexible temperature support
@@ -27,6 +29,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Update current temperature retrieval methods to use correct attributes
   - Add comprehensive logging for attribute detection and usage
   - Write unit tests for enhanced schedule manager functionality
+  - Commit changes with descriptive commit message
   - _Requirements: 2.3, 4.1, 4.2, 7.1, 7.2_
 
 - [ ] 4. Update Buffer Manager for flexible temperature attributes
@@ -35,6 +38,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Enhance buffer decision logging to include temperature attribute information
   - Update manual change detection to monitor correct temperature attributes
   - Write unit tests for buffer manager with mixed entity types
+  - Commit changes with descriptive commit message
   - _Requirements: 4.1, 4.2, 4.3, 4.4_
 
 - [ ] 5. Enhance Config Flow with improved entity discovery
@@ -44,6 +48,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Enhance entity display in UI with temperature attribute information
   - Add better error messages for unsupported entities
   - Write unit tests for enhanced config flow functionality
+  - Commit changes with descriptive commit message
   - _Requirements: 2.1, 2.2, 2.3, 2.4_
 
 - [ ] 6. Update Service Layer with enhanced validation
@@ -52,6 +57,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Enhance error reporting with specific attribute-related messages
   - Update service parameter validation to work with all supported entity types
   - Write unit tests for service layer with mixed entity configurations
+  - Commit changes with descriptive commit message
   - _Requirements: 5.1, 5.2, 5.3, 5.4_
 
 - [ ] 7. Implement data model enhancements
@@ -60,6 +66,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Update model serialization/deserialization to handle new fields
   - Ensure backward compatibility with existing schedule data
   - Write unit tests for enhanced data models
+  - Commit changes with descriptive commit message
   - _Requirements: 3.2, 8.1_
 
 - [ ] 8. Create migration system for existing installations
@@ -68,6 +75,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Add migration validation and error handling
   - Ensure migration preserves all existing schedule configurations
   - Write unit tests for migration scenarios with various entity configurations
+  - Commit changes with descriptive commit message
   - _Requirements: 3.1, 3.2, 8.1, 8.2, 8.3, 8.4_
 
 - [ ] 9. Add diagnostic and troubleshooting support
@@ -76,6 +84,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Implement health check functionality for attribute mapping consistency
   - Create troubleshooting utilities for attribute detection issues
   - Write unit tests for diagnostic functionality
+  - Commit changes with descriptive commit message
   - _Requirements: 7.1, 7.2, 7.3, 7.4_
 
 - [ ] 10. Update Frontend Card integration
@@ -84,6 +93,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Enhance real-time temperature monitoring for mixed entity types
   - Add error handling and display for unsupported entities in card
   - Write unit tests for frontend integration with mixed entity types
+  - Commit changes with descriptive commit message
   - _Requirements: 6.1, 6.2, 6.3, 6.4_
 
 - [ ] 11. Create comprehensive integration tests
@@ -92,6 +102,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Test migration scenarios from existing installations
   - Test error handling and recovery for various failure modes
   - Validate backward compatibility with existing configurations
+  - Commit changes with descriptive commit message
   - _Requirements: All requirements validation_
 
 - [ ] 12. Update documentation and user guides
@@ -100,6 +111,7 @@ Convert the enhanced climate entity support design into a series of prompts for 
   - Document the migration process for existing users
   - Add examples of supported entity configurations
   - Create diagnostic guide for temperature attribute problems
+  - Commit changes with descriptive commit message
   - _Requirements: 7.3, 7.4_
 
 - [ ] 13. Final integration and testing
