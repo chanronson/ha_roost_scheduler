@@ -19,6 +19,7 @@ from .storage import StorageService
 from .models import PresenceConfig, GlobalBufferConfig, ScheduleData
 from .presence_manager import PresenceManager
 from .buffer_manager import BufferManager
+from .dashboard_service import DashboardIntegrationService
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -161,7 +162,7 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._buffer_enabled = buffer_enabled
                 self._buffer_time_minutes = buffer_time_minutes
                 self._buffer_value_delta = buffer_value_delta
-                return await self.async_step_card()
+                return await self.async_step_card_installation()
 
         data_schema = vol.Schema({
             vol.Optional("buffer_enabled", default=True): selector.BooleanSelector(),
@@ -192,25 +193,12 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders={"name": NAME}
         )
 
-    async def async_step_card(
+    async def async_step_card_installation(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
-        """Handle Lovelace card installation step."""
+        """Handle automatic card installation step with dashboard service."""
         if user_input is not None:
-            self._add_card = user_input.get("add_card", False)
-            
-            if self._add_card:
-                # Get dashboard selection
-                self._selected_dashboard = user_input.get("dashboard")
-                self._selected_view = user_input.get("view")
-                
-                if self._selected_dashboard and self._selected_view:
-                    # Install the card
-                    try:
-                        await self._install_lovelace_card()
-                    except Exception as err:
-                        _LOGGER.error("Failed to install Lovelace card: %s", err)
-                        # Continue anyway - card installation is optional
+            self._add_card = user_input.get("add_card", True)
             
             # Create the config entry with enhanced configuration
             config_data = {
@@ -220,10 +208,34 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "buffer_enabled": getattr(self, '_buffer_enabled', True),
                 "buffer_time_minutes": getattr(self, '_buffer_time_minutes', DEFAULT_BUFFER_TIME_MINUTES),
                 "buffer_value_delta": getattr(self, '_buffer_value_delta', DEFAULT_BUFFER_VALUE_DELTA),
-                "add_card": self._add_card,
-                "dashboard": self._selected_dashboard,
-                "view": self._selected_view
+                "add_card": self._add_card
             }
+            
+            # Attempt automatic card installation if requested
+            installation_result = None
+            if self._add_card:
+                try:
+                    dashboard_service = DashboardIntegrationService(self.hass)
+                    installation_result = await dashboard_service.add_card_to_dashboard(
+                        entities=self._entities,
+                        dashboard_id=user_input.get("dashboard"),
+                        view_id=user_input.get("view")
+                    )
+                    
+                    if installation_result.success:
+                        _LOGGER.info("Successfully installed card automatically")
+                        config_data.update({
+                            "dashboard": installation_result.dashboard_id,
+                            "view": installation_result.view_id,
+                            "card_position": installation_result.card_position
+                        })
+                    else:
+                        _LOGGER.warning("Automatic card installation failed: %s", installation_result.error_message)
+                        # Continue with setup - card installation failure shouldn't block integration
+                        
+                except Exception as err:
+                    _LOGGER.error("Failed to install card automatically: %s", err)
+                    # Continue anyway - card installation is optional
             
             # Try to validate manager initialization with the configuration
             try:
@@ -232,16 +244,25 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.error("Failed to validate manager initialization: %s", err)
                 # Continue anyway - this validation is optional and managers will be initialized during integration setup
             
-            return self.async_create_entry(title=NAME, data=config_data)
+            # Create entry with success/failure feedback
+            if self._add_card and installation_result:
+                if installation_result.success:
+                    title = f"{NAME} - Card Added Successfully"
+                else:
+                    title = f"{NAME} - Manual Card Setup Required"
+            else:
+                title = NAME
+            
+            return self.async_create_entry(title=title, data=config_data)
 
-        # Get available dashboards and views
+        # Get available dashboards for selection
         dashboards = await self._get_dashboards()
         
         data_schema_fields = {
             vol.Optional("add_card", default=True): selector.BooleanSelector(),
         }
         
-        # Only show dashboard/view selection if we have dashboards and user wants to add card
+        # Show dashboard selection if available
         if dashboards:
             data_schema_fields[vol.Optional("dashboard")] = selector.SelectSelector(
                 selector.SelectSelectorConfig(
@@ -250,17 +271,24 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
             )
             
-            # For now, we'll use the default view. In a full implementation,
-            # we'd dynamically load views based on selected dashboard
             data_schema_fields[vol.Optional("view", default="default")] = selector.TextSelector()
 
         data_schema = vol.Schema(data_schema_fields)
 
         return self.async_show_form(
-            step_id="card",
+            step_id="card_installation",
             data_schema=data_schema,
-            description_placeholders={"name": NAME}
+            description_placeholders={
+                "name": NAME,
+                "manual_steps": self._get_manual_installation_steps()
+            }
         )
+
+    async def async_step_card(
+        self, user_input: Optional[Dict[str, Any]] = None
+    ) -> FlowResult:
+        """Handle Lovelace card installation step (legacy method - redirects to new method)."""
+        return await self.async_step_card_installation(user_input)
 
     async def async_step_import(self, import_data: Dict[str, Any]) -> FlowResult:
         """Handle import from configuration.yaml."""
@@ -469,11 +497,42 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         
         return dashboards
 
-    async def _install_lovelace_card(self) -> None:
-        """Install the Roost Scheduler card to the selected dashboard."""
+    def _get_manual_installation_steps(self) -> str:
+        """Get manual installation steps for fallback scenarios."""
+        return (
+            "If automatic card installation fails, you can manually add the card:\n"
+            "1. Go to your Home Assistant dashboard\n"
+            "2. Click the three dots menu and select 'Edit Dashboard'\n"
+            "3. Click '+ Add Card'\n"
+            "4. Search for 'Roost Scheduler' in the card picker\n"
+            "5. Configure the card with your selected entities\n"
+            "6. Save the dashboard"
+        )
+
+    async def _install_lovelace_card_fallback(self) -> None:
+        """Fallback method for card installation using legacy approach."""
         if not self._selected_dashboard or not self._selected_view:
             return
             
+        try:
+            # Use the dashboard service as primary method
+            dashboard_service = DashboardIntegrationService(self.hass)
+            result = await dashboard_service.add_card_to_dashboard(
+                entities=self._entities,
+                dashboard_id=self._selected_dashboard,
+                view_id=self._selected_view
+            )
+            
+            if result.success:
+                _LOGGER.info("Successfully installed card using dashboard service")
+                return
+            else:
+                _LOGGER.warning("Dashboard service failed, trying legacy method: %s", result.error_message)
+                
+        except Exception as err:
+            _LOGGER.warning("Dashboard service unavailable, using legacy method: %s", err)
+        
+        # Fallback to legacy installation method
         try:
             # Load the dashboard configuration
             if self._selected_dashboard == "lovelace":
@@ -524,9 +583,9 @@ class RoostSchedulerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Save the updated configuration
             await store.async_save(config)
             
-            _LOGGER.info("Successfully installed Roost Scheduler card to dashboard %s, view %s", 
+            _LOGGER.info("Successfully installed Roost Scheduler card to dashboard %s, view %s using legacy method", 
                         self._selected_dashboard, self._selected_view)
                         
         except Exception as err:
-            _LOGGER.error("Failed to install Lovelace card: %s", err)
+            _LOGGER.error("Failed to install Lovelace card with legacy method: %s", err)
             raise

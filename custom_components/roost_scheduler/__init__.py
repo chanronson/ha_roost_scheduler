@@ -231,6 +231,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "buffer_manager": buffer_manager,
             "logging_manager": logging_manager,
             "config_validator": config_validator,
+            "frontend_manager": None,  # Will be set after frontend resource registration
             "setup_diagnostics": setup_diagnostics,
         }
         
@@ -242,6 +243,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Failed to load schedules for entry %s: %s", entry.entry_id, e)
             setup_diagnostics["warnings"].append(f"Schedule loading failed: {str(e)}")
             # Continue setup even if schedule loading fails - will use defaults
+        
+        # Register frontend resources with error handling
+        # This must happen after storage service initialization but before WebSocket handlers
+        frontend_manager = None
+        try:
+            from .frontend_manager import FrontendResourceManager
+            frontend_manager = FrontendResourceManager(hass)
+            frontend_registration_result = await frontend_manager.register_frontend_resources()
+            
+            # Store frontend manager in entry data
+            hass.data[DOMAIN][entry.entry_id]["frontend_manager"] = frontend_manager
+            
+            if frontend_registration_result["success"]:
+                setup_diagnostics["components_initialized"].append("frontend_resources")
+                _LOGGER.info("Successfully registered frontend resources for entry %s: %s", 
+                           entry.entry_id, [r["resource"] for r in frontend_registration_result["resources_registered"]])
+                
+                # Log any warnings
+                if frontend_registration_result["warnings"]:
+                    for warning in frontend_registration_result["warnings"]:
+                        setup_diagnostics["warnings"].append(f"Frontend resource warning: {warning}")
+                        _LOGGER.warning("Frontend resource warning: %s", warning)
+            else:
+                setup_diagnostics["components_failed"].append({"component": "frontend_resources", "error": "Frontend resource registration failed"})
+                setup_diagnostics["warnings"].append("Frontend resources failed to register - card may not appear in dashboard picker")
+                _LOGGER.warning("Frontend resource registration failed for entry %s. Failed resources: %s", 
+                              entry.entry_id, frontend_registration_result["resources_failed"])
+                
+                # Log specific errors for troubleshooting
+                for failed_resource in frontend_registration_result["resources_failed"]:
+                    _LOGGER.error("Failed to register resource %s: %s", 
+                                failed_resource.get("resource", "unknown"), 
+                                failed_resource.get("error", "unknown error"))
+                
+                # Continue setup even if frontend registration fails - not critical for core functionality
+                
+        except Exception as e:
+            _LOGGER.warning("Failed to initialize frontend resource manager for entry %s: %s", entry.entry_id, e)
+            setup_diagnostics["components_failed"].append({"component": "frontend_resources", "error": str(e)})
+            setup_diagnostics["warnings"].append("Frontend resource manager initialization failed - card may not be available")
+            # Continue setup even if frontend registration fails - not critical for core functionality
         
         # Register services with error handling
         try:

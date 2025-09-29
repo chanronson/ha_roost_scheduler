@@ -18,13 +18,13 @@
   - Include better error handling and logging for registration failures
   - _Requirements: 1.1, 1.3, 4.1, 4.2_
 
-- [ ] 4. Create Dashboard Integration Service
+- [x] 4. Create Dashboard Integration Service
   - Implement `DashboardIntegrationService` class in new file `custom_components/roost_scheduler/dashboard_service.py`
   - Add methods for automatic card installation, dashboard detection, and default card configuration
   - Include conflict resolution for existing cards and error handling for dashboard access failures
   - _Requirements: 2.1, 2.2, 2.3, 4.3, 5.1, 5.2_
 
-- [ ] 5. Enhance configuration flow with automatic card installation
+- [x] 5. Enhance configuration flow with automatic card installation
   - Modify `async_step_card_installation` in `custom_components/roost_scheduler/config_flow.py` to use new dashboard service
   - Add automatic card installation after successful integration setup
   - Include fallback to manual installation instructions if automatic installation fails
