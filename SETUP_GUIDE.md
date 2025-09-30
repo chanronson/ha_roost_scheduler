@@ -75,8 +75,10 @@ The setup wizard will guide you through:
    - **Note**: Buffer configuration is automatically saved to persistent storage and will be preserved across Home Assistant restarts
 
 4. **Dashboard Integration**
-   - Option to automatically add the scheduler card to a dashboard
-   - Select dashboard and view for card placement
+   - The integration automatically registers the Roost Scheduler card with Home Assistant's frontend
+   - After successful setup, a Roost Scheduler card is automatically added to your default dashboard
+   - The card will also be available in the dashboard card picker for manual addition to other dashboards
+   - If automatic card installation fails, you'll receive instructions for manual installation
 
 ### 3. Verify Installation
 
@@ -86,7 +88,9 @@ After setup, you should see:
   - `roost_scheduler.apply_grid_now`
   - `roost_scheduler.migrate_resolution`
 - Storage files created in `.storage/roost_scheduler`
-- Card available in Lovelace card picker (if dashboard integration was selected)
+- Roost Scheduler card automatically added to your default dashboard
+- Card available in Lovelace card picker for adding to additional dashboards
+- Success message with link to view your new dashboard card
 
 **Configuration Persistence**: All manager configurations (presence settings, buffer settings) are automatically saved to Home Assistant's storage system and will persist across restarts. If you're upgrading from an older version, your existing configuration will be automatically migrated to the new storage format.
 
@@ -127,10 +131,19 @@ The buffer system prevents "tug-of-war" between manual and scheduled changes:
 
 ### Using the Lovelace Card
 
-1. **Add Card to Dashboard**
-   - Edit dashboard
-   - Add card → Search "Roost Scheduler"
-   - Configure entity and display options
+1. **Access Your Card**
+   - After setup, the Roost Scheduler card is automatically added to your default dashboard
+   - Navigate to your dashboard to find the new card
+   - If you need to add the card to other dashboards:
+     - Edit dashboard
+     - Add card → Search "Roost Scheduler"
+     - Configure entity and display options
+
+2. **Manual Card Installation (Fallback)**
+   - If automatic installation fails, you can manually add the card:
+     - Go to **Settings** → **Dashboards** → **Resources**
+     - Add resource: `/roost-scheduler-card/roost-scheduler-card.js` (type: JavaScript Module)
+     - Edit your dashboard and add the custom card
 
 2. **Create Schedule Slots**
    - Click and drag on the grid to select time periods
@@ -228,6 +241,7 @@ automation:
    - Check browser console for JavaScript errors
    - Clear browser cache and refresh
    - Ensure card resource is properly loaded
+   - If automatic card installation failed, try manual installation (see Manual Card Installation section)
 
 ### Debug Logging
 

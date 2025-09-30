@@ -305,7 +305,95 @@ presence_entities:
   - person.user2
 ```
 
-### 3. Lovelace Card Issues
+### 3. Dashboard Integration Issues
+
+**Symptoms:**
+- Card not automatically added to dashboard after setup
+- Card not appearing in dashboard card picker
+- Frontend resource registration failures
+- Setup completion shows errors about dashboard integration
+
+**Diagnosis Steps:**
+
+1. **Check Frontend Resource Registration**
+   ```yaml
+   service: roost_scheduler.run_diagnostics
+   data:
+     include_frontend_status: true
+   ```
+
+2. **Verify Card Resource Loading**
+   - Check browser console for resource loading errors
+   - Look for 404 errors for `/roost-scheduler-card/roost-scheduler-card.js`
+   - Verify resource is registered in **Settings** → **Dashboards** → **Resources**
+
+3. **Check Dashboard Integration Status**
+   ```yaml
+   service: roost_scheduler.get_dashboard_integration_status
+   data:
+     check_card_availability: true
+     check_dashboard_access: true
+   ```
+
+**Common Causes & Solutions:**
+
+| Issue | Cause | Solution |
+|-------|-------|----------|
+| Resource registration failed | Missing card files or permissions | Reinstall integration, check file permissions |
+| Card not in picker | Frontend registration incomplete | Restart HA, manually register resource |
+| Dashboard access denied | Insufficient permissions | Check user permissions for dashboard editing |
+| Card installation failed | Dashboard configuration locked | Manually add card to dashboard |
+
+**Manual Card Installation Steps:**
+
+If automatic installation fails, follow these steps:
+
+1. **Register Frontend Resource**
+   ```yaml
+   # Go to Settings → Dashboards → Resources
+   # Add new resource:
+   # URL: /roost-scheduler-card/roost-scheduler-card.js
+   # Type: JavaScript Module
+   ```
+
+2. **Add Card to Dashboard**
+   ```yaml
+   # Edit your dashboard
+   # Click "Add Card"
+   # Search for "Roost Scheduler"
+   # Configure with your climate entity
+   ```
+
+3. **Verify Card Configuration**
+   ```yaml
+   # Minimal working configuration:
+   type: custom:roost-scheduler-card
+   entity: climate.your_entity
+   title: "Schedule"
+   ```
+
+**Dashboard Integration Recovery:**
+
+```yaml
+# Force frontend resource re-registration
+service: roost_scheduler.register_frontend_resources
+data:
+  force_reload: true
+  verify_installation: true
+
+# Retry automatic card installation
+service: roost_scheduler.install_dashboard_card
+data:
+  dashboard_id: "default"
+  force_install: true
+
+# Check integration status after recovery
+service: roost_scheduler.run_diagnostics
+data:
+  include_dashboard_status: true
+```
+
+### 4. Lovelace Card Issues
 
 **Symptoms:**
 - Card doesn't load or shows error
@@ -366,7 +454,7 @@ height: 400
 theme: default
 ```
 
-### 4. Performance Issues
+### 5. Performance Issues
 
 **Symptoms:**
 - Slow response times
@@ -418,7 +506,7 @@ presence_entities:
   # - device_tracker.phone  # Remove redundant trackers
 ```
 
-### 5. Data and Storage Issues
+### 6. Data and Storage Issues
 
 **Symptoms:**
 - Schedules disappear after restart
@@ -580,6 +668,87 @@ logger:
 | **Storage** | `Configuration validation failed: invalid presence rule` | **Configuration corruption detected** |
 | **Config Validator** | `Repaired presence configuration: removed invalid entities` | **Automatic configuration repair** |
 | **Config Validator** | `Buffer configuration validation passed` | **Configuration integrity confirmed** |
+
+### Dashboard Integration Troubleshooting
+
+**Frontend Resource Registration Issues:**
+
+```yaml
+# Check if frontend resources are properly registered
+service: roost_scheduler.check_frontend_resources
+data:
+  verify_file_existence: true
+  check_registration_status: true
+  test_resource_loading: true
+```
+
+**Common Frontend Registration Errors:**
+
+| Error Message | Cause | Solution |
+|---------------|-------|----------|
+| "Card file not found" | Missing JavaScript files | Reinstall integration via HACS |
+| "Resource registration failed" | Frontend API unavailable | Restart Home Assistant |
+| "Permission denied accessing card files" | File permission issues | Check file ownership and permissions |
+| "Frontend not ready during registration" | Timing issue during startup | Enable retry logic or manual registration |
+
+**Dashboard Card Installation Issues:**
+
+```yaml
+# Diagnose dashboard card installation problems
+service: roost_scheduler.diagnose_card_installation
+data:
+  check_dashboard_access: true
+  verify_lovelace_storage: true
+  test_card_configuration: true
+```
+
+**Card Installation Recovery Procedures:**
+
+```yaml
+# 1. Reset frontend resource registration
+service: roost_scheduler.reset_frontend_registration
+data:
+  clear_existing_registration: true
+  force_re_register: true
+
+# 2. Force dashboard card installation
+service: roost_scheduler.force_card_installation
+data:
+  target_dashboard: "default"
+  overwrite_existing: false
+  use_default_config: true
+
+# 3. Verify installation success
+service: roost_scheduler.verify_dashboard_integration
+data:
+  check_card_in_picker: true
+  check_card_on_dashboard: true
+  test_card_functionality: true
+```
+
+**Manual Installation Verification:**
+
+After manual installation, verify everything is working:
+
+```yaml
+# Test card functionality
+service: roost_scheduler.test_card_functionality
+data:
+  entity_id: climate.your_entity
+  test_schedule_display: true
+  test_user_interactions: true
+  test_real_time_updates: true
+```
+
+**Dashboard Integration Logs to Monitor:**
+
+| Component | Log Message | Meaning |
+|-----------|-------------|---------|
+| Frontend Manager | `Frontend resources registered successfully` | Resource registration completed |
+| Frontend Manager | `Card file not found: /roost-scheduler-card/roost-scheduler-card.js` | Missing card files |
+| Dashboard Service | `Card added to dashboard: default` | Successful card installation |
+| Dashboard Service | `Dashboard access denied for user` | Permission issues |
+| Dashboard Service | `Lovelace storage not available` | Storage system issues |
 
 ### Network and WebSocket Issues
 
