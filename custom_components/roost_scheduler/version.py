@@ -9,7 +9,7 @@ from typing import Any
 _LOGGER = logging.getLogger(__name__)
 
 # Current version - update this for releases
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # Minimum supported version for data migration
 MIN_SUPPORTED_VERSION = "0.1.0"
@@ -19,6 +19,7 @@ VERSION_HISTORY = [
     "0.1.0",  # Initial release
     "0.2.0",  # Added presence management
     "0.3.0",  # Added buffer system and HACS support
+    "0.4.0",  # Added dashboard integration functionality
 ]
 
 

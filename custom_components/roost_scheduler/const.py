@@ -3,7 +3,7 @@ from __future__ import annotations
 
 DOMAIN = "roost_scheduler"
 NAME = "Roost Scheduler"
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # HACS and repository information
 HACS_REPOSITORY = "user/roost-scheduler"
@@ -20,7 +20,7 @@ OPTIONAL_DOMAINS = ["device_tracker", "person", "zone"]
 
 # Card information
 CARD_NAME = "roost-scheduler-card"
-CARD_VERSION = "0.3.0"
+CARD_VERSION = "0.4.0"
 CARD_URL = "/roost-scheduler-card/roost-scheduler-card.js"
 
 # Default configuration values
