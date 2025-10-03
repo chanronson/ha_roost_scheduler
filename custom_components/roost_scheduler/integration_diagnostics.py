@@ -16,6 +16,7 @@ from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, VERSION, REQUIRED_DOMAINS, OPTIONAL_DOMAINS
 from .file_system_validator import FileSystemValidator, FileSystemValidationResult
+from .file_system_error_handler import FileSystemErrorHandler, FileSystemError
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -240,6 +241,23 @@ class IntegrationDiagnostics:
         fs_validator = FileSystemValidator(self.hass, self.domain)
         return await fs_validator.check_file_corruption(file_path)
 
+    async def detect_file_system_errors(self) -> List[FileSystemError]:
+        """Detect file system errors and issues."""
+        error_handler = FileSystemErrorHandler(self.hass, self.domain)
+        return await error_handler.detect_file_system_errors()
+
+    async def generate_file_system_troubleshooting_guide(self) -> str:
+        """Generate comprehensive file system troubleshooting guide."""
+        error_handler = FileSystemErrorHandler(self.hass, self.domain)
+        errors = await error_handler.detect_file_system_errors()
+        return error_handler.generate_troubleshooting_guide(errors)
+
+    async def attempt_file_system_auto_fix(self) -> Dict[str, Any]:
+        """Attempt to automatically fix file system issues."""
+        error_handler = FileSystemErrorHandler(self.hass, self.domain)
+        errors = await error_handler.detect_file_system_errors()
+        return await error_handler.attempt_auto_fix(errors)
+
     def generate_troubleshooting_report(self, diagnostic_data: Optional[DiagnosticData] = None) -> str:
         """Generate a comprehensive troubleshooting report."""
         if diagnostic_data is None:
@@ -345,6 +363,17 @@ class IntegrationDiagnostics:
         recommendations = self._generate_recommendations(diagnostic_data)
         for rec in recommendations:
             report_lines.append(f"• {rec}")
+        
+        # Add file system troubleshooting section
+        report_lines.extend([
+            "",
+            "FILE SYSTEM TROUBLESHOOTING:",
+            "-" * 28,
+            "For detailed file system analysis and fixes, use:",
+            "• await diagnostics.generate_file_system_troubleshooting_guide()",
+            "• await diagnostics.attempt_file_system_auto_fix()",
+            ""
+        ])
         
         report_lines.extend([
             "",
