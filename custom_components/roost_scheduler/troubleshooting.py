@@ -45,6 +45,8 @@ class TroubleshootingReport:
     recommendations: List[str]
     step_by_step_guide: List[str]
     common_solutions: Dict[str, List[str]]
+    error_guidance: str
+    troubleshooting_checklist: List[str]
     formatted_report: str
 
 
@@ -572,6 +574,7 @@ class TroubleshootingReportGenerator:
         self.domain = domain
         self.diagnostics = IntegrationDiagnostics(hass, domain)
         self.comprehensive_collector = ComprehensiveDiagnosticCollector(hass, domain)
+        self.error_guidance = ErrorGuidanceSystem(hass, domain)
         
     async def generate_comprehensive_report(
         self, 
@@ -628,13 +631,28 @@ class TroubleshootingReportGenerator:
                 error_analysis, recommendations
             )
             
+            # Generate error-specific guidance
+            error_messages = (
+                error_analysis.get("critical_errors", []) + 
+                error_analysis.get("warnings", []) +
+                diagnostic_data.error_details
+            )
+            error_resolution_guide = self.error_guidance.generate_error_resolution_guide(
+                error_messages, error_context
+            )
+            
             # Get common solutions database
             common_solutions = self._get_enhanced_common_solutions()
+            
+            # Create troubleshooting checklist
+            error_categories = list(error_analysis.get("error_categories", {}).keys())
+            troubleshooting_checklist = self.error_guidance.create_troubleshooting_checklist(error_categories)
             
             # Generate formatted report
             formatted_report = await self._format_comprehensive_report(
                 context, diagnostic_data, validation_results, component_health,
-                error_analysis, recommendations, step_by_step_guide, common_solutions
+                error_analysis, recommendations, step_by_step_guide, common_solutions,
+                error_resolution_guide, troubleshooting_checklist
             )
             
             return TroubleshootingReport(
@@ -646,6 +664,8 @@ class TroubleshootingReportGenerator:
                 recommendations=recommendations,
                 step_by_step_guide=step_by_step_guide,
                 common_solutions=common_solutions,
+                error_guidance=error_resolution_guide,
+                troubleshooting_checklist=troubleshooting_checklist,
                 formatted_report=formatted_report
             )
             
@@ -981,7 +1001,9 @@ class TroubleshootingReportGenerator:
         error_analysis: Dict[str, Any],
         recommendations: List[str],
         step_by_step_guide: List[str],
-        common_solutions: Dict[str, List[str]]
+        common_solutions: Dict[str, List[str]],
+        error_guidance: str,
+        troubleshooting_checklist: List[str]
     ) -> str:
         """Format comprehensive troubleshooting report."""
         report_lines = []
@@ -1195,6 +1217,32 @@ class TroubleshootingReportGenerator:
                         report_lines.append(f"  • {solution}")
                     report_lines.append("")
             
+            # Error-Specific Guidance
+            if error_guidance and error_guidance.strip():
+                report_lines.extend([
+                    "🎯 ERROR-SPECIFIC GUIDANCE",
+                    "-" * 26,
+                    ""
+                ])
+                
+                # Add the error guidance (it's already formatted)
+                guidance_lines = error_guidance.split('\n')
+                report_lines.extend(guidance_lines)
+                report_lines.append("")
+            
+            # Troubleshooting Checklist
+            if troubleshooting_checklist:
+                report_lines.extend([
+                    "✅ TROUBLESHOOTING CHECKLIST",
+                    "-" * 28,
+                    ""
+                ])
+                
+                for checklist_item in troubleshooting_checklist:
+                    report_lines.append(checklist_item)
+                
+                report_lines.append("")
+            
             # Footer
             report_lines.extend([
                 "=" * 80,
@@ -1283,6 +1331,8 @@ If the problem persists, please report this issue with the error details above.
             recommendations=["Check logs", "Restart Home Assistant", "Reinstall integration"],
             step_by_step_guide=["Check error details above"],
             common_solutions={},
+            error_guidance="Error guidance generation failed",
+            troubleshooting_checklist=["Check error details above", "Restart Home Assistant"],
             formatted_report=error_report
         )
     
@@ -1354,6 +1404,691 @@ If the problem persists, please report this issue with the error details above.
                 "error": f"Export failed: {str(e)}",
                 "timestamp": datetime.now().isoformat()
             }, indent=2)
+    
+    def analyze_error_message(self, error_message: str) -> List[ErrorGuidanceEntry]:
+        """Analyze error message and return guidance."""
+        return self.error_guidance.analyze_error(error_message)
+    
+    def get_error_guidance(self, error_key: str) -> Optional[ErrorGuidanceEntry]:
+        """Get specific error guidance by key."""
+        return self.error_guidance.get_error_guidance(error_key)
+    
+    def generate_error_resolution_guide(
+        self, 
+        error_messages: List[str],
+        error_context: Optional[str] = None
+    ) -> str:
+        """Generate error resolution guide."""
+        return self.error_guidance.generate_error_resolution_guide(error_messages, error_context)
+    
+    def get_quick_fixes(self, error_category: str) -> List[str]:
+        """Get quick fixes for error category."""
+        return self.error_guidance.get_quick_fixes(error_category)
+    
+    def create_troubleshooting_checklist(self, error_categories: List[str]) -> List[str]:
+        """Create troubleshooting checklist."""
+        return self.error_guidance.create_troubleshooting_checklist(error_categories)
+    
+    def get_all_error_categories(self) -> Dict[str, List[str]]:
+        """Get all available error categories."""
+        return self.error_guidance.get_all_error_categories()
+
+
+@dataclass
+class ErrorGuidanceEntry:
+    """Individual error guidance entry."""
+    error_pattern: str
+    error_category: str
+    severity: str
+    title: str
+    description: str
+    causes: List[str]
+    solutions: List[str]
+    step_by_step: List[str]
+    prevention: List[str]
+    related_errors: List[str]
+
+
+class ErrorGuidanceSystem:
+    """Provides specific error resolution guidance and step-by-step troubleshooting instructions."""
+    
+    def __init__(self, hass: HomeAssistant, domain: str = DOMAIN) -> None:
+        """Initialize the error guidance system."""
+        self.hass = hass
+        self.domain = domain
+        self._guidance_database = self._build_guidance_database()
+        self._error_patterns = self._compile_error_patterns()
+    
+    def _build_guidance_database(self) -> Dict[str, ErrorGuidanceEntry]:
+        """Build comprehensive error guidance database."""
+        return {
+            "config_flow_not_loaded": ErrorGuidanceEntry(
+                error_pattern=r"config flow could not be loaded|invalid handler specified",
+                error_category="configuration",
+                severity="high",
+                title="Config Flow Loading Error",
+                description="The integration's configuration flow cannot be loaded, preventing setup through the UI.",
+                causes=[
+                    "Domain mismatch between manifest.json and const.py",
+                    "ConfigFlow class not properly defined or imported",
+                    "Missing or incorrect config_flow.py file",
+                    "Syntax errors in config flow implementation",
+                    "Missing required methods in ConfigFlow class"
+                ],
+                solutions=[
+                    "Verify domain consistency across all files",
+                    "Check ConfigFlow class inheritance and implementation",
+                    "Ensure config_flow.py exists and is syntactically correct",
+                    "Validate manifest.json has 'config_flow': true",
+                    "Restart Home Assistant after fixes"
+                ],
+                step_by_step=[
+                    "1. Check manifest.json file:",
+                    "   • Verify 'config_flow': true is present",
+                    "   • Ensure domain matches directory name",
+                    "   • Validate JSON syntax",
+                    "",
+                    "2. Verify const.py domain:",
+                    "   • Check DOMAIN constant matches manifest domain",
+                    "   • Ensure no typos or case mismatches",
+                    "",
+                    "3. Check config_flow.py:",
+                    "   • Verify file exists and is readable",
+                    "   • Check ConfigFlow class inherits from config_entries.ConfigFlow",
+                    "   • Ensure async_step_user method is implemented",
+                    "   • Validate Python syntax",
+                    "",
+                    "4. Test and restart:",
+                    "   • Restart Home Assistant",
+                    "   • Check logs for specific errors",
+                    "   • Try adding integration through UI"
+                ],
+                prevention=[
+                    "Use consistent domain naming across all files",
+                    "Follow Home Assistant config flow documentation",
+                    "Test config flow after any changes",
+                    "Use linting tools to catch syntax errors"
+                ],
+                related_errors=["domain_mismatch", "import_error", "manifest_invalid"]
+            ),
+            
+            "domain_mismatch": ErrorGuidanceEntry(
+                error_pattern=r"domain.*mismatch|inconsistent domain",
+                error_category="configuration",
+                severity="high",
+                title="Domain Consistency Error",
+                description="The domain is not consistent across integration files, causing registration issues.",
+                causes=[
+                    "Different domain values in manifest.json and const.py",
+                    "Typos in domain definitions",
+                    "Case sensitivity issues",
+                    "Copy-paste errors from other integrations"
+                ],
+                solutions=[
+                    "Use domain consistency checker to identify mismatches",
+                    "Update all files to use the same domain",
+                    "Ensure domain matches integration directory name",
+                    "Use lowercase, underscore-separated naming"
+                ],
+                step_by_step=[
+                    "1. Identify current domains:",
+                    "   • Check manifest.json 'domain' field",
+                    "   • Check const.py DOMAIN constant",
+                    "   • Check config_flow.py domain usage",
+                    "",
+                    "2. Choose correct domain:",
+                    "   • Should match integration directory name",
+                    "   • Use lowercase with underscores",
+                    "   • Follow Home Assistant naming conventions",
+                    "",
+                    "3. Update all files:",
+                    "   • Update manifest.json domain field",
+                    "   • Update const.py DOMAIN constant",
+                    "   • Update any hardcoded domain references",
+                    "",
+                    "4. Verify and test:",
+                    "   • Run domain consistency checker",
+                    "   • Restart Home Assistant",
+                    "   • Test integration loading"
+                ],
+                prevention=[
+                    "Use constants instead of hardcoded domain strings",
+                    "Implement automated domain consistency checks",
+                    "Use templates or generators for new integrations"
+                ],
+                related_errors=["config_flow_not_loaded", "import_error"]
+            ),
+            
+            "import_error": ErrorGuidanceEntry(
+                error_pattern=r"import.*error|module.*not found|no module named",
+                error_category="dependency",
+                severity="high",
+                title="Import/Module Error",
+                description="Required modules or dependencies cannot be imported, preventing integration loading.",
+                causes=[
+                    "Missing integration files",
+                    "Corrupted Python files",
+                    "Missing Home Assistant dependencies",
+                    "Circular import issues",
+                    "Incorrect import paths"
+                ],
+                solutions=[
+                    "Verify all integration files are present",
+                    "Check file permissions and readability",
+                    "Ensure Home Assistant dependencies are available",
+                    "Fix circular import issues",
+                    "Reinstall integration if files are corrupted"
+                ],
+                step_by_step=[
+                    "1. Identify missing module:",
+                    "   • Check error message for specific module name",
+                    "   • Determine if it's integration or HA component",
+                    "",
+                    "2. Check file existence:",
+                    "   • Verify integration files are present",
+                    "   • Check file permissions and readability",
+                    "   • Look for syntax errors in Python files",
+                    "",
+                    "3. Verify dependencies:",
+                    "   • Check manifest.json dependencies list",
+                    "   • Ensure required HA components are loaded",
+                    "   • Verify Python package availability",
+                    "",
+                    "4. Fix and test:",
+                    "   • Reinstall missing files",
+                    "   • Fix syntax errors",
+                    "   • Restart Home Assistant",
+                    "   • Check import success in logs"
+                ],
+                prevention=[
+                    "Regularly validate integration file integrity",
+                    "Use dependency management tools",
+                    "Test imports after file changes"
+                ],
+                related_errors=["file_not_found", "permission_denied", "syntax_error"]
+            ),
+            
+            "permission_denied": ErrorGuidanceEntry(
+                error_pattern=r"permission denied|access denied|not readable",
+                error_category="system",
+                severity="medium",
+                title="File Permission Error",
+                description="Home Assistant cannot access integration files due to permission restrictions.",
+                causes=[
+                    "Incorrect file ownership",
+                    "Restrictive file permissions",
+                    "SELinux or AppArmor policies",
+                    "File system mount options",
+                    "Container permission issues"
+                ],
+                solutions=[
+                    "Fix file ownership and permissions",
+                    "Ensure Home Assistant user can read files",
+                    "Check security policy restrictions",
+                    "Verify mount options allow access",
+                    "Reinstall with correct permissions"
+                ],
+                step_by_step=[
+                    "1. Check file permissions:",
+                    "   • Use 'ls -la' to check file permissions",
+                    "   • Verify Home Assistant user can read files",
+                    "   • Check directory permissions allow traversal",
+                    "",
+                    "2. Fix ownership:",
+                    "   • Change file owner to Home Assistant user",
+                    "   • Use 'chown -R homeassistant:homeassistant /path/to/integration'",
+                    "",
+                    "3. Set correct permissions:",
+                    "   • Files should be readable: chmod 644",
+                    "   • Directories should be executable: chmod 755",
+                    "",
+                    "4. Check security policies:",
+                    "   • Review SELinux/AppArmor restrictions",
+                    "   • Check container security settings",
+                    "   • Verify mount options"
+                ],
+                prevention=[
+                    "Install integrations with correct user",
+                    "Use proper file management tools",
+                    "Regularly audit file permissions"
+                ],
+                related_errors=["file_not_found", "import_error"]
+            ),
+            
+            "storage_error": ErrorGuidanceEntry(
+                error_pattern=r"storage.*error|disk.*full|no space left",
+                error_category="system",
+                severity="high",
+                title="Storage System Error",
+                description="Issues with file storage preventing integration data persistence.",
+                causes=[
+                    "Insufficient disk space",
+                    "Storage permission issues",
+                    "Corrupted storage files",
+                    "File system errors",
+                    "Storage directory not writable"
+                ],
+                solutions=[
+                    "Free up disk space",
+                    "Fix storage permissions",
+                    "Repair corrupted files",
+                    "Check file system integrity",
+                    "Ensure storage directory is writable"
+                ],
+                step_by_step=[
+                    "1. Check disk space:",
+                    "   • Use 'df -h' to check available space",
+                    "   • Ensure at least 1GB free space",
+                    "   • Clean up old logs and backups",
+                    "",
+                    "2. Verify storage permissions:",
+                    "   • Check config directory is writable",
+                    "   • Test file creation in config directory",
+                    "   • Verify Home Assistant user permissions",
+                    "",
+                    "3. Check file integrity:",
+                    "   • Look for corrupted storage files",
+                    "   • Check file system for errors",
+                    "   • Backup and restore if necessary",
+                    "",
+                    "4. Test storage access:",
+                    "   • Restart Home Assistant",
+                    "   • Monitor storage operations",
+                    "   • Verify integration can save data"
+                ],
+                prevention=[
+                    "Monitor disk space regularly",
+                    "Implement log rotation",
+                    "Regular file system checks",
+                    "Backup storage files"
+                ],
+                related_errors=["permission_denied", "file_system_error"]
+            ),
+            
+            "entity_not_found": ErrorGuidanceEntry(
+                error_pattern=r"entity.*not found|unknown entity|entity.*does not exist",
+                error_category="configuration",
+                severity="medium",
+                title="Entity Reference Error",
+                description="Integration references entities that don't exist or are unavailable.",
+                causes=[
+                    "Referenced entities were deleted",
+                    "Entity IDs changed or renamed",
+                    "Entities not yet loaded at startup",
+                    "Typos in entity configuration",
+                    "Entities from disabled integrations"
+                ],
+                solutions=[
+                    "Update entity references to existing entities",
+                    "Remove references to deleted entities",
+                    "Check entity availability and states",
+                    "Verify entity naming and domains",
+                    "Wait for entities to load before referencing"
+                ],
+                step_by_step=[
+                    "1. Identify missing entities:",
+                    "   • Check error logs for specific entity IDs",
+                    "   • List all entities in Developer Tools",
+                    "   • Verify entity domains and naming",
+                    "",
+                    "2. Check entity status:",
+                    "   • Verify entities exist and are available",
+                    "   • Check if entities are disabled",
+                    "   • Ensure source integrations are loaded",
+                    "",
+                    "3. Update configuration:",
+                    "   • Replace missing entities with valid ones",
+                    "   • Remove references to deleted entities",
+                    "   • Fix any typos in entity IDs",
+                    "",
+                    "4. Test and verify:",
+                    "   • Restart integration",
+                    "   • Check entity states are accessible",
+                    "   • Monitor for continued errors"
+                ],
+                prevention=[
+                    "Use entity registry for stable references",
+                    "Implement entity validation in configuration",
+                    "Monitor entity availability changes"
+                ],
+                related_errors=["configuration_error", "integration_not_loaded"]
+            ),
+            
+            "network_error": ErrorGuidanceEntry(
+                error_pattern=r"network.*error|connection.*failed|timeout",
+                error_category="network",
+                severity="medium",
+                title="Network Connectivity Error",
+                description="Network-related issues preventing integration communication.",
+                causes=[
+                    "Network connectivity issues",
+                    "Firewall blocking connections",
+                    "DNS resolution problems",
+                    "Service unavailability",
+                    "Timeout configuration issues"
+                ],
+                solutions=[
+                    "Check network connectivity",
+                    "Verify firewall settings",
+                    "Test DNS resolution",
+                    "Increase timeout values",
+                    "Check service availability"
+                ],
+                step_by_step=[
+                    "1. Test basic connectivity:",
+                    "   • Ping target hosts",
+                    "   • Check network interface status",
+                    "   • Verify routing configuration",
+                    "",
+                    "2. Check firewall settings:",
+                    "   • Verify required ports are open",
+                    "   • Check iptables/firewall rules",
+                    "   • Test from Home Assistant host",
+                    "",
+                    "3. Verify DNS resolution:",
+                    "   • Test hostname resolution",
+                    "   • Check DNS server configuration",
+                    "   • Try using IP addresses directly",
+                    "",
+                    "4. Adjust configuration:",
+                    "   • Increase timeout values",
+                    "   • Configure retry mechanisms",
+                    "   • Use alternative endpoints if available"
+                ],
+                prevention=[
+                    "Monitor network connectivity",
+                    "Implement connection retry logic",
+                    "Use redundant network paths"
+                ],
+                related_errors=["timeout_error", "service_unavailable"]
+            )
+        }
+    
+    def _compile_error_patterns(self) -> Dict[str, str]:
+        """Compile regex patterns for error matching."""
+        import re
+        patterns = {}
+        for error_key, guidance in self._guidance_database.items():
+            try:
+                patterns[error_key] = re.compile(guidance.error_pattern, re.IGNORECASE)
+            except re.error as e:
+                _LOGGER.warning("Invalid regex pattern for %s: %s", error_key, e)
+                patterns[error_key] = None
+        return patterns
+    
+    def analyze_error(self, error_message: str) -> List[ErrorGuidanceEntry]:
+        """Analyze error message and return matching guidance entries."""
+        matching_guidance = []
+        
+        for error_key, pattern in self._error_patterns.items():
+            if pattern and pattern.search(error_message):
+                matching_guidance.append(self._guidance_database[error_key])
+        
+        # Sort by severity (critical first)
+        severity_order = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        matching_guidance.sort(key=lambda x: severity_order.get(x.severity, 4))
+        
+        return matching_guidance
+    
+    def get_error_guidance(self, error_key: str) -> Optional[ErrorGuidanceEntry]:
+        """Get specific error guidance by key."""
+        return self._guidance_database.get(error_key)
+    
+    def get_all_error_categories(self) -> Dict[str, List[str]]:
+        """Get all error categories and their associated error keys."""
+        categories = {}
+        for error_key, guidance in self._guidance_database.items():
+            category = guidance.error_category
+            if category not in categories:
+                categories[category] = []
+            categories[category].append(error_key)
+        return categories
+    
+    def generate_error_resolution_guide(
+        self, 
+        error_messages: List[str],
+        error_context: Optional[str] = None
+    ) -> str:
+        """Generate comprehensive error resolution guide."""
+        guide_lines = []
+        
+        try:
+            guide_lines.extend([
+                "🔧 ERROR RESOLUTION GUIDE",
+                "=" * 25,
+                "",
+                f"Context: {error_context or 'General error analysis'}",
+                f"Generated: {datetime.now().isoformat()}",
+                ""
+            ])
+            
+            # Analyze all error messages
+            all_guidance = []
+            for error_msg in error_messages:
+                guidance_entries = self.analyze_error(error_msg)
+                all_guidance.extend(guidance_entries)
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            unique_guidance = []
+            for guidance in all_guidance:
+                if guidance.title not in seen:
+                    unique_guidance.append(guidance)
+                    seen.add(guidance.title)
+            
+            if not unique_guidance:
+                guide_lines.extend([
+                    "❓ No specific guidance found for the provided errors.",
+                    "",
+                    "General troubleshooting steps:",
+                    "• Check Home Assistant logs for detailed error messages",
+                    "• Verify integration installation and file integrity",
+                    "• Restart Home Assistant and retry the operation",
+                    "• Check system resources (disk space, memory, permissions)",
+                    "• Consider reinstalling the integration if issues persist",
+                    ""
+                ])
+            else:
+                guide_lines.extend([
+                    f"📋 Found {len(unique_guidance)} relevant error guidance entries:",
+                    ""
+                ])
+                
+                for i, guidance in enumerate(unique_guidance, 1):
+                    severity_emoji = {
+                        "critical": "🚨", "high": "⚠️", "medium": "⚡", "low": "ℹ️"
+                    }.get(guidance.severity, "❓")
+                    
+                    guide_lines.extend([
+                        f"{severity_emoji} ERROR {i}: {guidance.title}",
+                        "-" * (len(guidance.title) + 10),
+                        f"Category: {guidance.error_category.title()}",
+                        f"Severity: {guidance.severity.title()}",
+                        "",
+                        "Description:",
+                        f"  {guidance.description}",
+                        "",
+                        "Common Causes:",
+                    ])
+                    
+                    for cause in guidance.causes:
+                        guide_lines.append(f"  • {cause}")
+                    
+                    guide_lines.extend([
+                        "",
+                        "Solutions:",
+                    ])
+                    
+                    for solution in guidance.solutions:
+                        guide_lines.append(f"  • {solution}")
+                    
+                    guide_lines.extend([
+                        "",
+                        "Step-by-Step Resolution:",
+                    ])
+                    
+                    for step in guidance.step_by_step:
+                        guide_lines.append(f"  {step}")
+                    
+                    guide_lines.extend([
+                        "",
+                        "Prevention:",
+                    ])
+                    
+                    for prevention in guidance.prevention:
+                        guide_lines.append(f"  • {prevention}")
+                    
+                    if guidance.related_errors:
+                        guide_lines.extend([
+                            "",
+                            "Related Errors:",
+                            f"  {', '.join(guidance.related_errors)}",
+                        ])
+                    
+                    guide_lines.extend(["", "=" * 50, ""])
+            
+            # Add general recommendations
+            guide_lines.extend([
+                "🎯 GENERAL RECOMMENDATIONS",
+                "-" * 25,
+                "",
+                "If the specific guidance above doesn't resolve your issue:",
+                "",
+                "1. 📋 Collect More Information:",
+                "   • Generate a comprehensive troubleshooting report",
+                "   • Check Home Assistant logs for additional details",
+                "   • Note any recent system or configuration changes",
+                "",
+                "2. 🔄 Try Basic Recovery Steps:",
+                "   • Restart Home Assistant completely",
+                "   • Clear browser cache and cookies",
+                "   • Check system resources (CPU, memory, disk space)",
+                "",
+                "3. 🛠️ Advanced Troubleshooting:",
+                "   • Enable debug logging for the integration",
+                "   • Test with minimal configuration",
+                "   • Try reinstalling the integration",
+                "",
+                "4. 🆘 Get Additional Help:",
+                "   • Check integration documentation",
+                "   • Search community forums for similar issues",
+                "   • Report the issue with diagnostic data",
+                "",
+                "=" * 50
+            ])
+            
+        except Exception as e:
+            _LOGGER.error("Error generating resolution guide: %s", e)
+            guide_lines.extend([
+                "❌ Error generating resolution guide",
+                f"An error occurred: {str(e)}",
+                "",
+                "Please check logs and try basic troubleshooting steps."
+            ])
+        
+        return "\n".join(guide_lines)
+    
+    def get_quick_fixes(self, error_category: str) -> List[str]:
+        """Get quick fixes for a specific error category."""
+        quick_fixes = {
+            "configuration": [
+                "Check manifest.json syntax and required fields",
+                "Verify domain consistency across files",
+                "Validate configuration schema",
+                "Restart Home Assistant after config changes"
+            ],
+            "dependency": [
+                "Check all required dependencies are installed",
+                "Verify Home Assistant component availability",
+                "Update integration to latest version",
+                "Reinstall integration if files are corrupted"
+            ],
+            "system": [
+                "Check disk space and file permissions",
+                "Verify Home Assistant user access rights",
+                "Check system resource availability",
+                "Review security policy restrictions"
+            ],
+            "network": [
+                "Test network connectivity",
+                "Check firewall and port settings",
+                "Verify DNS resolution",
+                "Increase timeout values if needed"
+            ]
+        }
+        
+        return quick_fixes.get(error_category, [
+            "Check logs for specific error details",
+            "Restart Home Assistant",
+            "Verify integration installation",
+            "Check system resources"
+        ])
+    
+    def create_troubleshooting_checklist(self, error_categories: List[str]) -> List[str]:
+        """Create a troubleshooting checklist based on error categories."""
+        checklist = [
+            "🔍 TROUBLESHOOTING CHECKLIST",
+            "=" * 27,
+            "",
+            "Complete each applicable section based on your error types:",
+            ""
+        ]
+        
+        if "configuration" in error_categories:
+            checklist.extend([
+                "📋 Configuration Issues:",
+                "  ☐ Check manifest.json is valid JSON with required fields",
+                "  ☐ Verify domain consistency across all files",
+                "  ☐ Ensure config_flow.py exists and is syntactically correct",
+                "  ☐ Validate ConfigFlow class inheritance and methods",
+                "  ☐ Check for typos in configuration values",
+                ""
+            ])
+        
+        if "dependency" in error_categories:
+            checklist.extend([
+                "📦 Dependency Issues:",
+                "  ☐ Verify all integration files are present",
+                "  ☐ Check Home Assistant dependencies are available",
+                "  ☐ Ensure Python imports are working",
+                "  ☐ Test integration file readability",
+                "  ☐ Consider reinstalling if files are corrupted",
+                ""
+            ])
+        
+        if "system" in error_categories:
+            checklist.extend([
+                "💻 System Issues:",
+                "  ☐ Check available disk space (>1GB recommended)",
+                "  ☐ Verify file and directory permissions",
+                "  ☐ Test Home Assistant user access rights",
+                "  ☐ Check system resource usage (CPU, memory)",
+                "  ☐ Review security policies (SELinux, AppArmor)",
+                ""
+            ])
+        
+        if "network" in error_categories:
+            checklist.extend([
+                "🌐 Network Issues:",
+                "  ☐ Test basic network connectivity",
+                "  ☐ Check firewall and port configurations",
+                "  ☐ Verify DNS resolution is working",
+                "  ☐ Test from Home Assistant host directly",
+                "  ☐ Consider increasing timeout values",
+                ""
+            ])
+        
+        checklist.extend([
+            "🔄 Final Steps:",
+            "  ☐ Restart Home Assistant completely",
+            "  ☐ Clear browser cache and cookies",
+            "  ☐ Test integration functionality",
+            "  ☐ Monitor logs for any remaining errors",
+            "  ☐ Generate new diagnostic report if issues persist",
+            ""
+        ])
+        
+        return checklist
 
 
 class TroubleshootingManager:
