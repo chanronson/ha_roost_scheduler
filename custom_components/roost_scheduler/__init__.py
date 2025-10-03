@@ -140,9 +140,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # Attempt comprehensive error recovery with fallback mechanisms
             try:
                 _LOGGER.info("Initiating comprehensive error recovery system")
-                recovery_result = await _execute_comprehensive_error_recovery(
-                    hass, DOMAIN, validation_result, comprehensive_result, setup_diagnostics
+                # Use the new comprehensive error recovery system
+                from .comprehensive_error_recovery import ComprehensiveErrorRecovery
+                from .recovery_verification_system import RecoveryVerificationSystem
+                
+                error_recovery = ComprehensiveErrorRecovery(hass, DOMAIN)
+                verification_system = RecoveryVerificationSystem(hass, DOMAIN)
+                
+                # Execute comprehensive recovery
+                recovery_result_obj = await error_recovery.execute_comprehensive_recovery(
+                    validation_result, comprehensive_result, entry
                 )
+                
+                # Verify recovery effectiveness
+                verification_result = await verification_system.verify_recovery_effectiveness(
+                    validation_result, comprehensive_result, recovery_result_obj, entry
+                )
+                
+                # Convert to legacy format for compatibility
+                recovery_result = {
+                    "success": recovery_result_obj.success,
+                    "overall_status": recovery_result_obj.overall_status,
+                    "total_issues": recovery_result_obj.total_issues,
+                    "recovered_issues": recovery_result_obj.recovered_issues,
+                    "remaining_issues": recovery_result_obj.remaining_issues,
+                    "recovery_steps": [
+                        {
+                            "step_id": step.step_id,
+                            "description": step.description,
+                            "success": step.success,
+                            "duration": step.duration_seconds
+                        }
+                        for step in recovery_result_obj.recovery_steps
+                    ],
+                    "fallbacks_applied": recovery_result_obj.fallbacks_applied,
+                    "verification_results": recovery_result_obj.verification_results,
+                    "verification_system_results": {
+                        "success": verification_result.success,
+                        "overall_status": verification_result.overall_status,
+                        "tests_passed": verification_result.tests_passed,
+                        "tests_failed": verification_result.tests_failed,
+                        "improvement_metrics": verification_result.improvement_metrics
+                    },
+                    "duration_seconds": recovery_result_obj.duration_seconds,
+                    "recommendations": recovery_result_obj.recommendations + verification_result.recommendations,
+                    "emergency_mode": recovery_result_obj.emergency_mode
+                }
                 
                 if recovery_result["success"]:
                     _LOGGER.info("Error recovery completed successfully")
