@@ -230,6 +230,16 @@ class IntegrationDiagnostics:
         fs_validator = FileSystemValidator(self.hass, self.domain)
         return await fs_validator.validate_file_system()
 
+    async def validate_integration_files(self) -> Dict[str, Any]:
+        """Validate integration-specific file requirements and content."""
+        fs_validator = FileSystemValidator(self.hass, self.domain)
+        return await fs_validator.validate_integration_files()
+
+    async def check_file_corruption(self, file_path: str) -> Dict[str, Any]:
+        """Check for file corruption indicators."""
+        fs_validator = FileSystemValidator(self.hass, self.domain)
+        return await fs_validator.check_file_corruption(file_path)
+
     def generate_troubleshooting_report(self, diagnostic_data: Optional[DiagnosticData] = None) -> str:
         """Generate a comprehensive troubleshooting report."""
         if diagnostic_data is None:

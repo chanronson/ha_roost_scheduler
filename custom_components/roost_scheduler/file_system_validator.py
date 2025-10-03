@@ -514,6 +514,112 @@ class FileSystemValidator:
             _LOGGER.debug("Content validation failed for %s: %s", path, e)
             return False
 
+    async def validate_integration_files(self) -> Dict[str, Any]:
+        """Validate integration-specific file requirements and content."""
+        validation_results = {}
+        
+        # Validate manifest.json
+        manifest_result = await self._validate_manifest_file()
+        validation_results["manifest"] = manifest_result
+        
+        # Validate config_flow.py
+        config_flow_result = await self._validate_config_flow_file()
+        validation_results["config_flow"] = config_flow_result
+        
+        # Validate const.py
+        const_result = await self._validate_const_file()
+        validation_results["const"] = const_result
+        
+        # Validate __init__.py
+        init_result = await self._validate_init_file()
+        validation_results["init"] = init_result
+        
+        # Validate services.yaml
+        services_result = await self._validate_services_file()
+        validation_results["services"] = services_result
+        
+        # Validate strings.json
+        strings_result = await self._validate_strings_file()
+        validation_results["strings"] = strings_result
+        
+        return validation_results
+
+    async def check_file_corruption(self, file_path: str) -> Dict[str, Any]:
+        """Check for file corruption indicators."""
+        path = Path(file_path)
+        corruption_check = {
+            "path": str(path),
+            "exists": False,
+            "readable": False,
+            "size_consistent": False,
+            "encoding_valid": False,
+            "content_parseable": False,
+            "corruption_indicators": [],
+            "recommendations": []
+        }
+        
+        try:
+            if not path.exists():
+                corruption_check["corruption_indicators"].append("File does not exist")
+                corruption_check["recommendations"].append(f"Recreate missing file: {path.name}")
+                return corruption_check
+            
+            corruption_check["exists"] = True
+            
+            # Check readability
+            if not os.access(path, os.R_OK):
+                corruption_check["corruption_indicators"].append("File is not readable")
+                corruption_check["recommendations"].append("Fix file permissions")
+                return corruption_check
+            
+            corruption_check["readable"] = True
+            
+            # Check file size consistency
+            try:
+                stat1 = path.stat()
+                stat2 = path.stat()  # Read twice to check consistency
+                corruption_check["size_consistent"] = stat1.st_size == stat2.st_size
+                if not corruption_check["size_consistent"]:
+                    corruption_check["corruption_indicators"].append("File size inconsistent between reads")
+            except OSError as e:
+                corruption_check["corruption_indicators"].append(f"Cannot read file stats: {e}")
+            
+            # Check encoding validity
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    f.read()
+                corruption_check["encoding_valid"] = True
+            except UnicodeDecodeError:
+                corruption_check["corruption_indicators"].append("File contains invalid UTF-8 encoding")
+                corruption_check["recommendations"].append("Fix file encoding or recreate file")
+            except OSError as e:
+                corruption_check["corruption_indicators"].append(f"Cannot read file: {e}")
+            
+            # Check content parseability based on file type
+            if path.suffix == ".py":
+                corruption_check["content_parseable"] = await self._validate_python_file(path)
+                if not corruption_check["content_parseable"]:
+                    corruption_check["corruption_indicators"].append("Python file has syntax errors")
+                    corruption_check["recommendations"].append("Fix Python syntax errors")
+            elif path.suffix == ".json":
+                corruption_check["content_parseable"] = await self._validate_json_file(path)
+                if not corruption_check["content_parseable"]:
+                    corruption_check["corruption_indicators"].append("JSON file has syntax errors")
+                    corruption_check["recommendations"].append("Fix JSON syntax errors")
+            elif path.suffix in [".yaml", ".yml"]:
+                corruption_check["content_parseable"] = await self._validate_yaml_file(path)
+                if not corruption_check["content_parseable"]:
+                    corruption_check["corruption_indicators"].append("YAML file has syntax errors")
+                    corruption_check["recommendations"].append("Fix YAML syntax errors")
+            else:
+                corruption_check["content_parseable"] = True  # Assume valid for other file types
+            
+        except Exception as e:
+            corruption_check["corruption_indicators"].append(f"Corruption check failed: {str(e)}")
+            corruption_check["recommendations"].append("Investigate file system issues")
+        
+        return corruption_check
+
     async def _validate_python_file(self, path: Path) -> bool:
         """Validate Python file syntax."""
         try:
@@ -654,3 +760,398 @@ class FileSystemValidator:
             recommendations.append("All file system checks passed - no issues detected")
         
         return recommendations
+
+    async def _validate_manifest_file(self) -> Dict[str, Any]:
+        """Validate manifest.json file content and structure."""
+        manifest_path = self._integration_path / "manifest.json"
+        result = {
+            "valid": False,
+            "exists": False,
+            "readable": False,
+            "json_valid": False,
+            "required_fields_present": False,
+            "config_flow_enabled": False,
+            "domain_consistent": False,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            if not manifest_path.exists():
+                result["issues"].append("manifest.json file does not exist")
+                result["recommendations"].append("Create manifest.json file")
+                return result
+            
+            result["exists"] = True
+            
+            if not os.access(manifest_path, os.R_OK):
+                result["issues"].append("manifest.json is not readable")
+                result["recommendations"].append("Fix file permissions for manifest.json")
+                return result
+            
+            result["readable"] = True
+            
+            # Parse JSON
+            try:
+                import json
+                with open(manifest_path, 'r', encoding='utf-8') as f:
+                    manifest_data = json.load(f)
+                result["json_valid"] = True
+            except json.JSONDecodeError as e:
+                result["issues"].append(f"Invalid JSON syntax: {e}")
+                result["recommendations"].append("Fix JSON syntax errors in manifest.json")
+                return result
+            
+            # Check required fields
+            required_fields = ["domain", "name", "version", "config_flow"]
+            missing_fields = [field for field in required_fields if field not in manifest_data]
+            
+            if missing_fields:
+                result["issues"].append(f"Missing required fields: {', '.join(missing_fields)}")
+                result["recommendations"].append(f"Add missing fields to manifest.json: {', '.join(missing_fields)}")
+            else:
+                result["required_fields_present"] = True
+            
+            # Check config_flow setting
+            if manifest_data.get("config_flow") is True:
+                result["config_flow_enabled"] = True
+            else:
+                result["issues"].append("config_flow is not enabled in manifest")
+                result["recommendations"].append("Set 'config_flow': true in manifest.json")
+            
+            # Check domain consistency
+            manifest_domain = manifest_data.get("domain")
+            if manifest_domain == self.domain:
+                result["domain_consistent"] = True
+            else:
+                result["issues"].append(f"Domain mismatch: manifest has '{manifest_domain}', expected '{self.domain}'")
+                result["recommendations"].append(f"Update domain in manifest.json to '{self.domain}'")
+            
+            result["valid"] = (
+                result["json_valid"] and
+                result["required_fields_present"] and
+                result["config_flow_enabled"] and
+                result["domain_consistent"]
+            )
+            
+        except Exception as e:
+            result["issues"].append(f"Validation failed: {str(e)}")
+            result["recommendations"].append("Check manifest.json file for corruption")
+        
+        return result
+
+    async def _validate_config_flow_file(self) -> Dict[str, Any]:
+        """Validate config_flow.py file content and structure."""
+        config_flow_path = self._integration_path / "config_flow.py"
+        result = {
+            "valid": False,
+            "exists": False,
+            "readable": False,
+            "python_valid": False,
+            "has_config_flow_class": False,
+            "proper_inheritance": False,
+            "has_required_methods": False,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            if not config_flow_path.exists():
+                result["issues"].append("config_flow.py file does not exist")
+                result["recommendations"].append("Create config_flow.py file")
+                return result
+            
+            result["exists"] = True
+            
+            if not os.access(config_flow_path, os.R_OK):
+                result["issues"].append("config_flow.py is not readable")
+                result["recommendations"].append("Fix file permissions for config_flow.py")
+                return result
+            
+            result["readable"] = True
+            
+            # Check Python syntax
+            result["python_valid"] = await self._validate_python_file(config_flow_path)
+            if not result["python_valid"]:
+                result["issues"].append("Python syntax errors in config_flow.py")
+                result["recommendations"].append("Fix Python syntax errors")
+                return result
+            
+            # Read file content for analysis
+            with open(config_flow_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Check for config flow class
+            import re
+            class_pattern = r'class\s+\w*ConfigFlow\s*\('
+            if re.search(class_pattern, content):
+                result["has_config_flow_class"] = True
+            else:
+                result["issues"].append("No ConfigFlow class found")
+                result["recommendations"].append("Add a ConfigFlow class that inherits from config_entries.ConfigFlow")
+            
+            # Check inheritance
+            if "config_entries.ConfigFlow" in content or "ConfigFlow" in content:
+                result["proper_inheritance"] = True
+            else:
+                result["issues"].append("ConfigFlow class does not inherit from config_entries.ConfigFlow")
+                result["recommendations"].append("Ensure ConfigFlow class inherits from config_entries.ConfigFlow")
+            
+            # Check for required methods
+            required_methods = ["async_step_user"]
+            method_checks = []
+            for method in required_methods:
+                if method in content:
+                    method_checks.append(True)
+                else:
+                    result["issues"].append(f"Missing required method: {method}")
+                    result["recommendations"].append(f"Implement {method} method in ConfigFlow class")
+                    method_checks.append(False)
+            
+            result["has_required_methods"] = all(method_checks)
+            
+            result["valid"] = (
+                result["python_valid"] and
+                result["has_config_flow_class"] and
+                result["proper_inheritance"] and
+                result["has_required_methods"]
+            )
+            
+        except Exception as e:
+            result["issues"].append(f"Validation failed: {str(e)}")
+            result["recommendations"].append("Check config_flow.py file for corruption")
+        
+        return result
+
+    async def _validate_const_file(self) -> Dict[str, Any]:
+        """Validate const.py file content and structure."""
+        const_path = self._integration_path / "const.py"
+        result = {
+            "valid": False,
+            "exists": False,
+            "readable": False,
+            "python_valid": False,
+            "has_domain_constant": False,
+            "domain_consistent": False,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            if not const_path.exists():
+                result["issues"].append("const.py file does not exist")
+                result["recommendations"].append("Create const.py file with DOMAIN constant")
+                return result
+            
+            result["exists"] = True
+            
+            if not os.access(const_path, os.R_OK):
+                result["issues"].append("const.py is not readable")
+                result["recommendations"].append("Fix file permissions for const.py")
+                return result
+            
+            result["readable"] = True
+            
+            # Check Python syntax
+            result["python_valid"] = await self._validate_python_file(const_path)
+            if not result["python_valid"]:
+                result["issues"].append("Python syntax errors in const.py")
+                result["recommendations"].append("Fix Python syntax errors")
+                return result
+            
+            # Read file content for analysis
+            with open(const_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Check for DOMAIN constant
+            import re
+            domain_pattern = r'DOMAIN\s*=\s*["\']([^"\']+)["\']'
+            domain_match = re.search(domain_pattern, content)
+            
+            if domain_match:
+                result["has_domain_constant"] = True
+                const_domain = domain_match.group(1)
+                
+                if const_domain == self.domain:
+                    result["domain_consistent"] = True
+                else:
+                    result["issues"].append(f"Domain mismatch: const.py has '{const_domain}', expected '{self.domain}'")
+                    result["recommendations"].append(f"Update DOMAIN constant to '{self.domain}'")
+            else:
+                result["issues"].append("DOMAIN constant not found")
+                result["recommendations"].append("Add DOMAIN constant to const.py")
+            
+            result["valid"] = (
+                result["python_valid"] and
+                result["has_domain_constant"] and
+                result["domain_consistent"]
+            )
+            
+        except Exception as e:
+            result["issues"].append(f"Validation failed: {str(e)}")
+            result["recommendations"].append("Check const.py file for corruption")
+        
+        return result
+
+    async def _validate_init_file(self) -> Dict[str, Any]:
+        """Validate __init__.py file content and structure."""
+        init_path = self._integration_path / "__init__.py"
+        result = {
+            "valid": False,
+            "exists": False,
+            "readable": False,
+            "python_valid": False,
+            "has_setup_function": False,
+            "has_setup_entry_function": False,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            if not init_path.exists():
+                result["issues"].append("__init__.py file does not exist")
+                result["recommendations"].append("Create __init__.py file with setup functions")
+                return result
+            
+            result["exists"] = True
+            
+            if not os.access(init_path, os.R_OK):
+                result["issues"].append("__init__.py is not readable")
+                result["recommendations"].append("Fix file permissions for __init__.py")
+                return result
+            
+            result["readable"] = True
+            
+            # Check Python syntax
+            result["python_valid"] = await self._validate_python_file(init_path)
+            if not result["python_valid"]:
+                result["issues"].append("Python syntax errors in __init__.py")
+                result["recommendations"].append("Fix Python syntax errors")
+                return result
+            
+            # Read file content for analysis
+            with open(init_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Check for setup functions
+            if "async def async_setup(" in content or "def setup(" in content:
+                result["has_setup_function"] = True
+            else:
+                result["issues"].append("No setup function found")
+                result["recommendations"].append("Add async_setup or setup function")
+            
+            if "async def async_setup_entry(" in content:
+                result["has_setup_entry_function"] = True
+            else:
+                result["issues"].append("No async_setup_entry function found")
+                result["recommendations"].append("Add async_setup_entry function for config entry handling")
+            
+            result["valid"] = (
+                result["python_valid"] and
+                result["has_setup_function"] and
+                result["has_setup_entry_function"]
+            )
+            
+        except Exception as e:
+            result["issues"].append(f"Validation failed: {str(e)}")
+            result["recommendations"].append("Check __init__.py file for corruption")
+        
+        return result
+
+    async def _validate_services_file(self) -> Dict[str, Any]:
+        """Validate services.yaml file content and structure."""
+        services_path = self._integration_path / "services.yaml"
+        result = {
+            "valid": False,
+            "exists": False,
+            "readable": False,
+            "yaml_valid": False,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            if not services_path.exists():
+                # services.yaml is optional, so this is not an error
+                result["issues"].append("services.yaml file does not exist (optional)")
+                result["valid"] = True  # Still valid since it's optional
+                return result
+            
+            result["exists"] = True
+            
+            if not os.access(services_path, os.R_OK):
+                result["issues"].append("services.yaml is not readable")
+                result["recommendations"].append("Fix file permissions for services.yaml")
+                return result
+            
+            result["readable"] = True
+            
+            # Check YAML syntax
+            result["yaml_valid"] = await self._validate_yaml_file(services_path)
+            if not result["yaml_valid"]:
+                result["issues"].append("YAML syntax errors in services.yaml")
+                result["recommendations"].append("Fix YAML syntax errors")
+                return result
+            
+            result["valid"] = result["yaml_valid"]
+            
+        except Exception as e:
+            result["issues"].append(f"Validation failed: {str(e)}")
+            result["recommendations"].append("Check services.yaml file for corruption")
+        
+        return result
+
+    async def _validate_strings_file(self) -> Dict[str, Any]:
+        """Validate strings.json file content and structure."""
+        strings_path = self._integration_path / "strings.json"
+        result = {
+            "valid": False,
+            "exists": False,
+            "readable": False,
+            "json_valid": False,
+            "has_config_section": False,
+            "issues": [],
+            "recommendations": []
+        }
+        
+        try:
+            if not strings_path.exists():
+                result["issues"].append("strings.json file does not exist")
+                result["recommendations"].append("Create strings.json file for UI strings")
+                return result
+            
+            result["exists"] = True
+            
+            if not os.access(strings_path, os.R_OK):
+                result["issues"].append("strings.json is not readable")
+                result["recommendations"].append("Fix file permissions for strings.json")
+                return result
+            
+            result["readable"] = True
+            
+            # Check JSON syntax
+            try:
+                import json
+                with open(strings_path, 'r', encoding='utf-8') as f:
+                    strings_data = json.load(f)
+                result["json_valid"] = True
+                
+                # Check for config section (needed for config flow)
+                if "config" in strings_data:
+                    result["has_config_section"] = True
+                else:
+                    result["issues"].append("No 'config' section found in strings.json")
+                    result["recommendations"].append("Add 'config' section for config flow strings")
+                
+            except json.JSONDecodeError as e:
+                result["issues"].append(f"Invalid JSON syntax: {e}")
+                result["recommendations"].append("Fix JSON syntax errors in strings.json")
+                return result
+            
+            result["valid"] = result["json_valid"] and result["has_config_section"]
+            
+        except Exception as e:
+            result["issues"].append(f"Validation failed: {str(e)}")
+            result["recommendations"].append("Check strings.json file for corruption")
+        
+        return result
