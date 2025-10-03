@@ -48,6 +48,521 @@ class TroubleshootingReport:
     formatted_report: str
 
 
+@dataclass
+class SystemDiagnosticData:
+    """Extended system diagnostic information."""
+    hardware_info: Dict[str, Any]
+    home_assistant_info: Dict[str, Any]
+    integration_info: Dict[str, Any]
+    network_info: Dict[str, Any]
+    storage_info: Dict[str, Any]
+    performance_metrics: Dict[str, Any]
+    error_history: List[Dict[str, Any]]
+    entity_diagnostics: Dict[str, Any]
+
+
+class ComprehensiveDiagnosticCollector:
+    """Collects comprehensive diagnostic data and preserves error context."""
+    
+    def __init__(self, hass: HomeAssistant, domain: str = DOMAIN) -> None:
+        """Initialize the diagnostic collector."""
+        self.hass = hass
+        self.domain = domain
+        self._error_history = []
+        self._performance_metrics = {}
+        
+    async def collect_comprehensive_diagnostics(
+        self, 
+        entry_id: Optional[str] = None,
+        include_sensitive: bool = False
+    ) -> SystemDiagnosticData:
+        """Collect comprehensive system diagnostic data."""
+        _LOGGER.debug("Collecting comprehensive diagnostic data")
+        
+        try:
+            # Collect all diagnostic categories
+            hardware_info = await self._collect_hardware_info()
+            ha_info = await self._collect_home_assistant_info()
+            integration_info = await self._collect_integration_info(entry_id)
+            network_info = await self._collect_network_info() if include_sensitive else {}
+            storage_info = await self._collect_storage_info()
+            performance_metrics = await self._collect_performance_metrics(entry_id)
+            error_history = await self._collect_error_history()
+            entity_diagnostics = await self._collect_entity_diagnostics(entry_id)
+            
+            return SystemDiagnosticData(
+                hardware_info=hardware_info,
+                home_assistant_info=ha_info,
+                integration_info=integration_info,
+                network_info=network_info,
+                storage_info=storage_info,
+                performance_metrics=performance_metrics,
+                error_history=error_history,
+                entity_diagnostics=entity_diagnostics
+            )
+            
+        except Exception as e:
+            _LOGGER.error("Error collecting comprehensive diagnostics: %s", e, exc_info=True)
+            # Return minimal diagnostic data
+            return SystemDiagnosticData(
+                hardware_info={"error": f"Collection failed: {str(e)}"},
+                home_assistant_info={},
+                integration_info={},
+                network_info={},
+                storage_info={},
+                performance_metrics={},
+                error_history=[{"error": str(e), "timestamp": datetime.now().isoformat()}],
+                entity_diagnostics={}
+            )
+    
+    async def _collect_hardware_info(self) -> Dict[str, Any]:
+        """Collect hardware and system information."""
+        try:
+            import psutil
+            import platform
+            
+            # Basic system info
+            hardware_info = {
+                "platform": platform.platform(),
+                "architecture": platform.architecture(),
+                "processor": platform.processor(),
+                "python_version": platform.python_version(),
+                "system": platform.system(),
+                "release": platform.release(),
+                "machine": platform.machine()
+            }
+            
+            # Memory information
+            try:
+                memory = psutil.virtual_memory()
+                hardware_info["memory"] = {
+                    "total": memory.total,
+                    "available": memory.available,
+                    "percent_used": memory.percent,
+                    "free": memory.free
+                }
+            except Exception as e:
+                hardware_info["memory"] = {"error": f"Failed to get memory info: {str(e)}"}
+            
+            # Disk information
+            try:
+                disk = psutil.disk_usage('/')
+                hardware_info["disk"] = {
+                    "total": disk.total,
+                    "used": disk.used,
+                    "free": disk.free,
+                    "percent_used": (disk.used / disk.total) * 100
+                }
+            except Exception as e:
+                hardware_info["disk"] = {"error": f"Failed to get disk info: {str(e)}"}
+            
+            # CPU information
+            try:
+                hardware_info["cpu"] = {
+                    "count": psutil.cpu_count(),
+                    "percent": psutil.cpu_percent(interval=1),
+                    "load_average": psutil.getloadavg() if hasattr(psutil, 'getloadavg') else None
+                }
+            except Exception as e:
+                hardware_info["cpu"] = {"error": f"Failed to get CPU info: {str(e)}"}
+            
+            return hardware_info
+            
+        except ImportError:
+            # psutil not available, collect basic info
+            import platform
+            return {
+                "platform": platform.platform(),
+                "python_version": platform.python_version(),
+                "system": platform.system(),
+                "note": "psutil not available for detailed system metrics"
+            }
+        except Exception as e:
+            return {"error": f"Failed to collect hardware info: {str(e)}"}
+    
+    async def _collect_home_assistant_info(self) -> Dict[str, Any]:
+        """Collect Home Assistant specific information."""
+        try:
+            ha_info = {
+                "version": HA_VERSION,
+                "state": self.hass.state.name,
+                "is_running": self.hass.is_running,
+                "config_dir": str(self.hass.config.config_dir) if self.hass.config.config_dir else None,
+                "safe_mode": getattr(self.hass.config, 'safe_mode', False),
+                "recovery_mode": getattr(self.hass.config, 'recovery_mode', False)
+            }
+            
+            # Component information
+            ha_info["loaded_components"] = len(self.hass.config.components)
+            ha_info["total_entities"] = len(self.hass.states.async_all())
+            
+            # Config entries
+            ha_info["config_entries"] = {
+                "total": len(self.hass.config_entries.async_entries()),
+                "by_domain": {}
+            }
+            
+            # Count entries by domain
+            for entry in self.hass.config_entries.async_entries():
+                domain = entry.domain
+                if domain not in ha_info["config_entries"]["by_domain"]:
+                    ha_info["config_entries"]["by_domain"][domain] = 0
+                ha_info["config_entries"]["by_domain"][domain] += 1
+            
+            # Integration registry info
+            try:
+                from homeassistant.helpers import integration_platform
+                ha_info["integration_platforms"] = len(getattr(integration_platform, '_PLATFORMS', {}))
+            except Exception:
+                ha_info["integration_platforms"] = "unknown"
+            
+            # Recorder info (if available)
+            try:
+                if "recorder" in self.hass.config.components:
+                    recorder_data = self.hass.data.get("recorder")
+                    if recorder_data:
+                        ha_info["recorder"] = {
+                            "enabled": True,
+                            "db_url_set": bool(getattr(recorder_data, 'db_url', None))
+                        }
+                else:
+                    ha_info["recorder"] = {"enabled": False}
+            except Exception as e:
+                ha_info["recorder"] = {"error": f"Failed to get recorder info: {str(e)}"}
+            
+            return ha_info
+            
+        except Exception as e:
+            return {"error": f"Failed to collect Home Assistant info: {str(e)}"}
+    
+    async def _collect_integration_info(self, entry_id: Optional[str]) -> Dict[str, Any]:
+        """Collect integration-specific information."""
+        try:
+            integration_info = {
+                "domain": self.domain,
+                "version": VERSION,
+                "loaded": self.domain in self.hass.config.components,
+                "config_entries": []
+            }
+            
+            # Get all config entries for this domain
+            entries = self.hass.config_entries.async_entries(self.domain)
+            for entry in entries:
+                entry_info = {
+                    "entry_id": entry.entry_id,
+                    "title": entry.title,
+                    "state": entry.state.name,
+                    "version": entry.version,
+                    "minor_version": entry.minor_version,
+                    "source": entry.source,
+                    "unique_id": entry.unique_id,
+                    "disabled_by": entry.disabled_by,
+                    "supports_options": entry.supports_options,
+                    "supports_reconfigure": entry.supports_reconfigure,
+                    "supports_remove_device": entry.supports_remove_device,
+                    "supports_unload": entry.supports_unload
+                }
+                
+                # Add runtime data info if available
+                if entry.entry_id in self.hass.data.get(self.domain, {}):
+                    runtime_data = self.hass.data[self.domain][entry.entry_id]
+                    entry_info["runtime_data_available"] = True
+                    entry_info["runtime_data_keys"] = list(runtime_data.keys()) if isinstance(runtime_data, dict) else []
+                else:
+                    entry_info["runtime_data_available"] = False
+                
+                integration_info["config_entries"].append(entry_info)
+            
+            # Get entities for this domain
+            domain_entities = [
+                entity for entity in self.hass.states.async_all()
+                if entity.entity_id.startswith(f"{self.domain}.")
+            ]
+            
+            integration_info["entities"] = {
+                "total": len(domain_entities),
+                "by_platform": {}
+            }
+            
+            # Count entities by platform
+            for entity in domain_entities:
+                platform = entity.entity_id.split('.')[0] if '.' in entity.entity_id else 'unknown'
+                if platform not in integration_info["entities"]["by_platform"]:
+                    integration_info["entities"]["by_platform"][platform] = 0
+                integration_info["entities"]["by_platform"][platform] += 1
+            
+            # Check for specific entry data if entry_id provided
+            if entry_id and entry_id in self.hass.data.get(self.domain, {}):
+                entry_data = self.hass.data[self.domain][entry_id]
+                integration_info["specific_entry"] = {
+                    "entry_id": entry_id,
+                    "data_keys": list(entry_data.keys()) if isinstance(entry_data, dict) else [],
+                    "managers_available": {
+                        "presence_manager": "presence_manager" in entry_data,
+                        "buffer_manager": "buffer_manager" in entry_data,
+                        "schedule_manager": "schedule_manager" in entry_data,
+                        "storage_service": "storage_service" in entry_data,
+                        "logging_manager": "logging_manager" in entry_data
+                    } if isinstance(entry_data, dict) else {}
+                }
+            
+            return integration_info
+            
+        except Exception as e:
+            return {"error": f"Failed to collect integration info: {str(e)}"}
+    
+    async def _collect_network_info(self) -> Dict[str, Any]:
+        """Collect network-related information (non-sensitive)."""
+        try:
+            network_info = {
+                "websocket_connected": False,
+                "api_available": False,
+                "frontend_loaded": "frontend" in self.hass.config.components
+            }
+            
+            # Check if websocket API is available
+            try:
+                if hasattr(self.hass, 'components') and hasattr(self.hass.components, 'websocket_api'):
+                    network_info["websocket_api_loaded"] = True
+                else:
+                    network_info["websocket_api_loaded"] = False
+            except Exception:
+                network_info["websocket_api_loaded"] = False
+            
+            # Check HTTP component
+            network_info["http_loaded"] = "http" in self.hass.config.components
+            
+            return network_info
+            
+        except Exception as e:
+            return {"error": f"Failed to collect network info: {str(e)}"}
+    
+    async def _collect_storage_info(self) -> Dict[str, Any]:
+        """Collect storage-related information."""
+        try:
+            storage_info = {
+                "config_dir_exists": self.hass.config.config_dir is not None,
+                "config_dir_writable": False
+            }
+            
+            # Test config directory writability
+            if self.hass.config.config_dir:
+                try:
+                    import os
+                    test_file = os.path.join(self.hass.config.config_dir, '.roost_test_write')
+                    with open(test_file, 'w') as f:
+                        f.write('test')
+                    os.remove(test_file)
+                    storage_info["config_dir_writable"] = True
+                except Exception as e:
+                    storage_info["config_dir_writable"] = False
+                    storage_info["write_test_error"] = str(e)
+            
+            # Check storage directory
+            try:
+                from homeassistant.helpers.storage import Store
+                storage_info["storage_available"] = True
+                
+                # Test storage creation
+                test_store = Store(self.hass, 1, f"{self.domain}_diagnostic_test")
+                storage_info["storage_creatable"] = True
+                
+            except Exception as e:
+                storage_info["storage_available"] = False
+                storage_info["storage_error"] = str(e)
+            
+            return storage_info
+            
+        except Exception as e:
+            return {"error": f"Failed to collect storage info: {str(e)}"}
+    
+    async def _collect_performance_metrics(self, entry_id: Optional[str]) -> Dict[str, Any]:
+        """Collect performance-related metrics."""
+        try:
+            metrics = {
+                "collection_timestamp": datetime.now().isoformat(),
+                "hass_startup_time": None,
+                "integration_load_time": None,
+                "entity_update_frequencies": {}
+            }
+            
+            # Get Home Assistant startup time if available
+            try:
+                if hasattr(self.hass, 'data') and 'homeassistant_start' in self.hass.data:
+                    start_time = self.hass.data['homeassistant_start']
+                    metrics["hass_startup_time"] = start_time.isoformat() if start_time else None
+            except Exception:
+                pass
+            
+            # Analyze entity update patterns for this domain
+            domain_entities = [
+                entity for entity in self.hass.states.async_all()
+                if entity.entity_id.startswith(f"{self.domain}.")
+            ]
+            
+            for entity in domain_entities[:10]:  # Limit to first 10 entities
+                try:
+                    last_updated = entity.last_updated
+                    if last_updated:
+                        time_since_update = (datetime.now(last_updated.tzinfo) - last_updated).total_seconds()
+                        metrics["entity_update_frequencies"][entity.entity_id] = {
+                            "last_updated": last_updated.isoformat(),
+                            "seconds_since_update": time_since_update
+                        }
+                except Exception:
+                    continue
+            
+            # Add any stored performance metrics
+            if self._performance_metrics:
+                metrics["stored_metrics"] = self._performance_metrics.copy()
+            
+            return metrics
+            
+        except Exception as e:
+            return {"error": f"Failed to collect performance metrics: {str(e)}"}
+    
+    async def _collect_error_history(self) -> List[Dict[str, Any]]:
+        """Collect recent error history."""
+        try:
+            error_history = []
+            
+            # Add stored error history
+            error_history.extend(self._error_history)
+            
+            # Try to get recent log entries (if logging handler is available)
+            try:
+                import logging
+                logger = logging.getLogger(f"custom_components.{self.domain}")
+                
+                # This is a simplified approach - in a real implementation,
+                # you might want to use a custom log handler to capture errors
+                error_history.append({
+                    "source": "logger_check",
+                    "timestamp": datetime.now().isoformat(),
+                    "level": logger.level,
+                    "effective_level": logger.getEffectiveLevel(),
+                    "handlers_count": len(logger.handlers)
+                })
+                
+            except Exception as e:
+                error_history.append({
+                    "source": "logger_error",
+                    "timestamp": datetime.now().isoformat(),
+                    "error": str(e)
+                })
+            
+            return error_history[-50:]  # Return last 50 entries
+            
+        except Exception as e:
+            return [{"error": f"Failed to collect error history: {str(e)}", "timestamp": datetime.now().isoformat()}]
+    
+    async def _collect_entity_diagnostics(self, entry_id: Optional[str]) -> Dict[str, Any]:
+        """Collect entity-specific diagnostic information."""
+        try:
+            entity_diagnostics = {
+                "total_entities": 0,
+                "entities_by_state": {},
+                "entities_with_issues": [],
+                "entity_details": {}
+            }
+            
+            # Get entities for this domain
+            domain_entities = [
+                entity for entity in self.hass.states.async_all()
+                if entity.entity_id.startswith(f"{self.domain}.")
+            ]
+            
+            entity_diagnostics["total_entities"] = len(domain_entities)
+            
+            # Analyze entity states
+            for entity in domain_entities:
+                state = entity.state
+                if state not in entity_diagnostics["entities_by_state"]:
+                    entity_diagnostics["entities_by_state"][state] = 0
+                entity_diagnostics["entities_by_state"][state] += 1
+                
+                # Check for problematic entities
+                if state in ["unavailable", "unknown", "error"]:
+                    entity_diagnostics["entities_with_issues"].append({
+                        "entity_id": entity.entity_id,
+                        "state": state,
+                        "last_updated": entity.last_updated.isoformat() if entity.last_updated else None,
+                        "attributes": dict(entity.attributes) if entity.attributes else {}
+                    })
+                
+                # Collect details for first few entities
+                if len(entity_diagnostics["entity_details"]) < 5:
+                    entity_diagnostics["entity_details"][entity.entity_id] = {
+                        "state": state,
+                        "last_updated": entity.last_updated.isoformat() if entity.last_updated else None,
+                        "last_changed": entity.last_changed.isoformat() if entity.last_changed else None,
+                        "attributes_count": len(entity.attributes) if entity.attributes else 0,
+                        "domain": entity.domain,
+                        "object_id": entity.object_id
+                    }
+            
+            return entity_diagnostics
+            
+        except Exception as e:
+            return {"error": f"Failed to collect entity diagnostics: {str(e)}"}
+    
+    def preserve_error_context(
+        self, 
+        error: Exception, 
+        context: str, 
+        additional_data: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Preserve error context for later analysis."""
+        try:
+            error_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "error_type": type(error).__name__,
+                "error_message": str(error),
+                "context": context,
+                "traceback": traceback.format_exc(),
+                "additional_data": additional_data or {}
+            }
+            
+            self._error_history.append(error_entry)
+            
+            # Keep only last 100 errors
+            if len(self._error_history) > 100:
+                self._error_history = self._error_history[-100:]
+                
+        except Exception as e:
+            _LOGGER.error("Failed to preserve error context: %s", e)
+    
+    def add_performance_metric(self, metric_name: str, value: Any, timestamp: Optional[datetime] = None) -> None:
+        """Add a performance metric for later collection."""
+        try:
+            if timestamp is None:
+                timestamp = datetime.now()
+            
+            if metric_name not in self._performance_metrics:
+                self._performance_metrics[metric_name] = []
+            
+            self._performance_metrics[metric_name].append({
+                "value": value,
+                "timestamp": timestamp.isoformat()
+            })
+            
+            # Keep only last 50 entries per metric
+            if len(self._performance_metrics[metric_name]) > 50:
+                self._performance_metrics[metric_name] = self._performance_metrics[metric_name][-50:]
+                
+        except Exception as e:
+            _LOGGER.error("Failed to add performance metric: %s", e)
+    
+    def get_diagnostic_summary(self) -> Dict[str, Any]:
+        """Get a summary of collected diagnostic data."""
+        return {
+            "error_history_count": len(self._error_history),
+            "performance_metrics_count": len(self._performance_metrics),
+            "last_error": self._error_history[-1] if self._error_history else None,
+            "available_metrics": list(self._performance_metrics.keys())
+        }
+
+
 class TroubleshootingReportGenerator:
     """Generates comprehensive troubleshooting reports with diagnostic data and user-friendly guidance."""
     
@@ -56,6 +571,7 @@ class TroubleshootingReportGenerator:
         self.hass = hass
         self.domain = domain
         self.diagnostics = IntegrationDiagnostics(hass, domain)
+        self.comprehensive_collector = ComprehensiveDiagnosticCollector(hass, domain)
         
     async def generate_comprehensive_report(
         self, 
@@ -67,7 +583,13 @@ class TroubleshootingReportGenerator:
         _LOGGER.info("Generating comprehensive troubleshooting report")
         
         try:
-            # Create troubleshooting context
+            # Create troubleshooting context with enhanced system state
+            system_state = await self._collect_system_state()
+            system_state.update({
+                "comprehensive_diagnostics_available": True,
+                "diagnostic_summary": self.comprehensive_collector.get_diagnostic_summary()
+            })
+            
             context = TroubleshootingContext(
                 timestamp=datetime.now().isoformat(),
                 ha_version=HA_VERSION,
@@ -75,11 +597,17 @@ class TroubleshootingReportGenerator:
                 entry_id=entry_id,
                 error_context=error_context,
                 user_action=user_action,
-                system_state=await self._collect_system_state()
+                system_state=system_state
             )
             
             # Collect diagnostic data
             diagnostic_data = await self.diagnostics.collect_diagnostic_data()
+            
+            # Collect comprehensive system diagnostics
+            system_diagnostics = await self.comprehensive_collector.collect_comprehensive_diagnostics(
+                entry_id=entry_id, 
+                include_sensitive=False
+            )
             
             # Run validation checks
             validation_results = await self._run_comprehensive_validation()
@@ -123,6 +651,18 @@ class TroubleshootingReportGenerator:
             
         except Exception as e:
             _LOGGER.error("Error generating troubleshooting report: %s", e, exc_info=True)
+            
+            # Preserve error context for future analysis
+            self.comprehensive_collector.preserve_error_context(
+                e, 
+                "troubleshooting_report_generation",
+                {
+                    "entry_id": entry_id,
+                    "error_context": error_context,
+                    "user_action": user_action
+                }
+            )
+            
             # Return minimal report with error information
             return await self._create_error_report(e, entry_id, error_context)
     
@@ -745,6 +1285,75 @@ If the problem persists, please report this issue with the error details above.
             common_solutions={},
             formatted_report=error_report
         )
+    
+    async def collect_system_diagnostics(
+        self, 
+        entry_id: Optional[str] = None,
+        include_sensitive: bool = False
+    ) -> SystemDiagnosticData:
+        """Collect comprehensive system diagnostic data."""
+        return await self.comprehensive_collector.collect_comprehensive_diagnostics(
+            entry_id=entry_id,
+            include_sensitive=include_sensitive
+        )
+    
+    def preserve_error_context(
+        self, 
+        error: Exception, 
+        context: str, 
+        additional_data: Optional[Dict[str, Any]] = None
+    ) -> None:
+        """Preserve error context for analysis."""
+        self.comprehensive_collector.preserve_error_context(error, context, additional_data)
+    
+    def add_performance_metric(
+        self, 
+        metric_name: str, 
+        value: Any, 
+        timestamp: Optional[datetime] = None
+    ) -> None:
+        """Add performance metric for collection."""
+        self.comprehensive_collector.add_performance_metric(metric_name, value, timestamp)
+    
+    def get_diagnostic_summary(self) -> Dict[str, Any]:
+        """Get summary of collected diagnostic data."""
+        return self.comprehensive_collector.get_diagnostic_summary()
+    
+    async def export_diagnostic_data(
+        self, 
+        entry_id: Optional[str] = None,
+        format_type: str = "json"
+    ) -> str:
+        """Export diagnostic data in specified format."""
+        try:
+            system_diagnostics = await self.collect_system_diagnostics(entry_id)
+            diagnostic_data = await self.diagnostics.collect_diagnostic_data()
+            
+            export_data = {
+                "export_info": {
+                    "timestamp": datetime.now().isoformat(),
+                    "format": format_type,
+                    "entry_id": entry_id,
+                    "integration_version": VERSION,
+                    "ha_version": HA_VERSION
+                },
+                "system_diagnostics": asdict(system_diagnostics),
+                "integration_diagnostics": asdict(diagnostic_data),
+                "diagnostic_summary": self.get_diagnostic_summary()
+            }
+            
+            if format_type == "json":
+                return json.dumps(export_data, indent=2, default=str)
+            else:
+                # For other formats, return JSON as fallback
+                return json.dumps(export_data, indent=2, default=str)
+                
+        except Exception as e:
+            _LOGGER.error("Error exporting diagnostic data: %s", e)
+            return json.dumps({
+                "error": f"Export failed: {str(e)}",
+                "timestamp": datetime.now().isoformat()
+            }, indent=2)
 
 
 class TroubleshootingManager:
