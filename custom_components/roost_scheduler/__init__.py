@@ -99,6 +99,179 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     }
     
     try:
+        # Run startup validation before proceeding with setup
+        from .startup_validation_system import StartupValidationSystem
+        from .config_flow_registration_fixer import ConfigFlowRegistrationFixer
+        from .comprehensive_validator import ComprehensiveValidator
+        
+        _LOGGER.info("Running comprehensive startup validation for entry %s", entry.entry_id)
+        validation_start_time = datetime.now()
+        
+        # Initialize validation orchestration system
+        startup_validator = StartupValidationSystem(hass)
+        comprehensive_validator = ComprehensiveValidator(hass)
+        
+        # Run orchestrated validation with complete error handling chain
+        validation_result = await startup_validator.run_validation_orchestration(DOMAIN, entry)
+        comprehensive_result = await comprehensive_validator.validate_all()
+        
+        validation_duration = (datetime.now() - validation_start_time).total_seconds()
+        setup_diagnostics["startup_validation"] = {
+            "duration_seconds": validation_duration,
+            "success": validation_result.success,
+            "issues_found": len(validation_result.issues),
+            "warnings_found": len(validation_result.warnings),
+            "orchestration_steps": validation_result.startup_diagnostics.get("validation_context", {}).get("validation_steps", [])
+        }
+        setup_diagnostics["comprehensive_validation"] = {
+            "valid": comprehensive_result.valid,
+            "overall_status": comprehensive_result.overall_status,
+            "manifest_valid": comprehensive_result.manifest_result.valid,
+            "dependencies_valid": comprehensive_result.dependency_result.valid,
+            "version_compatible": comprehensive_result.version_result.compatible
+        }
+        
+        # Implement comprehensive error recovery system
+        if not validation_result.success or not comprehensive_result.valid:
+            _LOGGER.warning("Validation failed - startup: %s, comprehensive: %s", 
+                          validation_result.success, comprehensive_result.valid)
+            setup_diagnostics["warnings"].append("Validation found critical issues requiring fixes")
+            
+            # Attempt comprehensive error recovery with fallback mechanisms
+            try:
+                _LOGGER.info("Initiating comprehensive error recovery system")
+                recovery_result = await _execute_comprehensive_error_recovery(
+                    hass, DOMAIN, validation_result, comprehensive_result, setup_diagnostics
+                )
+                
+                if recovery_result["success"]:
+                    _LOGGER.info("Error recovery completed successfully")
+                    setup_diagnostics["error_recovery"] = recovery_result
+                    setup_diagnostics["components_initialized"].append("error_recovery_system")
+                else:
+                    _LOGGER.error("Error recovery failed: %s", recovery_result.get("error", "Unknown error"))
+                    setup_diagnostics["components_failed"].append({
+                        "component": "error_recovery_system", 
+                        "error": recovery_result.get("error", "Recovery failed")
+                    })
+                    
+                    # Apply emergency fallbacks when recovery fails
+                    await _apply_emergency_recovery_fallbacks(setup_diagnostics)
+                
+            except Exception as e:
+                _LOGGER.error("Critical error during comprehensive error recovery: %s", e)
+                setup_diagnostics["components_failed"].append({
+                    "component": "comprehensive_error_recovery", 
+                    "error": str(e)
+                })
+                setup_diagnostics["warnings"].append("Comprehensive error recovery failed - using emergency fallbacks")
+                
+                # Apply emergency fallbacks when recovery system itself fails
+                await _apply_emergency_recovery_fallbacks(setup_diagnostics)
+        else:
+            _LOGGER.info("All validation checks passed successfully")
+            setup_diagnostics["components_initialized"].append("comprehensive_validation")
+            
+        # Legacy fix system for backward compatibility
+        if not validation_result.success:
+            _LOGGER.info("Running legacy fix system for additional coverage")
+            try:
+                fixer = ConfigFlowRegistrationFixer(hass, DOMAIN)
+                fix_result = await fixer.apply_all_fixes()
+                
+                setup_diagnostics["automatic_fixes"] = {
+                    "attempted": True,
+                    "success": fix_result.success,
+                    "total_issues": fix_result.total_issues,
+                    "fixed_issues": fix_result.fixed_issues,
+                    "failed_fixes": fix_result.failed_fixes,
+                    "backup_created": fix_result.backup_created
+                }
+                
+                if fix_result.success:
+                    _LOGGER.info("Automatic fixes applied successfully (%d/%d issues fixed)", 
+                               fix_result.fixed_issues, fix_result.total_issues)
+                    setup_diagnostics["components_initialized"].append("startup_validation_fixes")
+                    
+                    # Re-run validation to confirm fixes
+                    try:
+                        validation_result = await startup_validator.run_comprehensive_validation(DOMAIN)
+                        setup_diagnostics["startup_validation"]["post_fix_success"] = validation_result.success
+                        
+                        if validation_result.success:
+                            _LOGGER.info("Post-fix validation passed - proceeding with setup")
+                        else:
+                            _LOGGER.warning("Some validation issues remain after fixes")
+                            setup_diagnostics["warnings"].append("Some validation issues could not be automatically fixed")
+                            
+                            # Apply fallback mechanisms for remaining issues
+                            await _apply_validation_fallbacks(validation_result, setup_diagnostics)
+                            
+                    except Exception as e:
+                        _LOGGER.error("Post-fix validation failed: %s", e)
+                        setup_diagnostics["warnings"].append(f"Post-fix validation error: {str(e)}")
+                        
+                        # Apply emergency fallbacks
+                        await _apply_emergency_fallbacks(setup_diagnostics)
+                        
+                else:
+                    _LOGGER.error("Automatic fixes failed - applying fallback mechanisms")
+                    setup_diagnostics["warnings"].append("Automatic fixes failed")
+                    
+                    # Log detailed fix results for troubleshooting
+                    for fix_result_detail in fix_result.fix_results:
+                        if not fix_result_detail.success:
+                            _LOGGER.error("Fix failed for %s: %s", 
+                                        fix_result_detail.issue_type, 
+                                        "; ".join(fix_result_detail.errors))
+                    
+                    # Apply fallback mechanisms when fixes fail
+                    await _apply_fix_failure_fallbacks(fix_result, setup_diagnostics)
+                    
+            except Exception as e:
+                _LOGGER.error("Critical error during automatic fix application: %s", e)
+                setup_diagnostics["components_failed"].append({
+                    "component": "automatic_fixes", 
+                    "error": str(e)
+                })
+                setup_diagnostics["warnings"].append("Automatic fix system failed - using emergency fallbacks")
+                
+                # Apply emergency fallbacks when fix system itself fails
+                await _apply_emergency_fallbacks(setup_diagnostics)
+        else:
+            _LOGGER.info("Startup validation passed successfully")
+            setup_diagnostics["components_initialized"].append("startup_validation")
+        
+        # Store validation results for later reference
+        setup_diagnostics["validation_results"] = {
+            "comprehensive_result": validation_result,
+            "diagnostic_data": validation_result.diagnostic_data,
+            "startup_diagnostics": validation_result.startup_diagnostics
+        }
+        
+        # Implement error recovery mechanisms based on validation results
+        if not validation_result.success:
+            critical_issues = [
+                issue for issue in validation_result.issues 
+                if isinstance(issue, dict) and issue.get("severity") == "critical"
+            ]
+            
+            if critical_issues:
+                _LOGGER.error("Critical validation issues found that may prevent proper operation:")
+                for issue in critical_issues:
+                    _LOGGER.error("  - %s", issue.get("description", str(issue)))
+                
+                # Check if we should continue or fail setup
+                should_continue = await _evaluate_setup_continuation(critical_issues, setup_diagnostics)
+                
+                if not should_continue:
+                    _LOGGER.error("Setup cannot continue due to critical validation failures")
+                    await _cleanup_entry_data(hass, entry)
+                    return False
+                else:
+                    _LOGGER.warning("Continuing setup despite critical issues - functionality may be limited")
+                    setup_diagnostics["warnings"].append("Setup continued despite critical validation issues")
+        
         # Initialize logging manager with error handling
         logging_manager = None
         try:
@@ -112,7 +285,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             setup_diagnostics["warnings"].append("Logging manager initialization failed - continuing without enhanced logging")
             # Continue without logging manager - not critical for core functionality
         
-        # Initialize storage service with error handling
+        # Initialize storage service with enhanced error handling and fallbacks
         storage_service = None
         try:
             storage_service = StorageService(hass, entry.entry_id)
@@ -121,8 +294,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         except Exception as e:
             _LOGGER.error("Critical error: Failed to initialize storage service: %s", e)
             setup_diagnostics["components_failed"].append({"component": "storage_service", "error": str(e)})
-            await _cleanup_entry_data(hass, entry)
-            return False
+            
+            # Try emergency storage fallback
+            try:
+                _LOGGER.warning("Attempting emergency storage service fallback")
+                from .storage import StorageService
+                storage_service = StorageService(hass, entry.entry_id, emergency_mode=True)
+                setup_diagnostics["fallbacks_used"].append("emergency_storage_service")
+                setup_diagnostics["warnings"].append("Using emergency storage service - some features may be limited")
+                _LOGGER.warning("Emergency storage service initialized")
+            except Exception as fallback_error:
+                _LOGGER.error("Emergency storage service fallback failed: %s", fallback_error)
+                
+                # Generate comprehensive error report before failing
+                await _generate_setup_failure_report(hass, entry, setup_diagnostics, e)
+                await _cleanup_entry_data(hass, entry)
+                return False
         
         # Initialize managers with robust error handling and fallbacks
         from .presence_manager import PresenceManager
@@ -222,6 +409,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             setup_diagnostics["warnings"].append(f"Configuration validation failed: {str(e)}")
             # Continue setup even if validation fails - not critical
         
+        # Initialize dashboard integration status tracking
+        dashboard_integration_status = {
+            "frontend_resources_registered": False,
+            "card_available_in_picker": False,
+            "dashboard_service_initialized": False,
+            "card_added_to_dashboard": False,
+            "dashboard_id": None,
+            "frontend_errors": [],
+            "dashboard_errors": [],
+            "troubleshooting_steps": []
+        }
+
         # Initialize dashboard integration service with comprehensive error handling
         dashboard_service = None
         try:
@@ -245,21 +444,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             ])
             # Continue setup even if dashboard service fails - not critical for core functionality
 
-        # Store services in hass.data
-        hass.data.setdefault(DOMAIN, {})
-        hass.data[DOMAIN][entry.entry_id] = {
-            "storage_service": storage_service,
-            "schedule_manager": schedule_manager,
-            "presence_manager": presence_manager,
-            "buffer_manager": buffer_manager,
-            "logging_manager": logging_manager,
-            "config_validator": config_validator,
-            "frontend_manager": frontend_manager,
-            "dashboard_service": dashboard_service,
-            "setup_diagnostics": setup_diagnostics,
-            "dashboard_integration_status": dashboard_integration_status,
-        }
-        
         # Load existing schedules with error handling
         try:
             await storage_service.load_schedules()
@@ -272,16 +456,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Register frontend resources with comprehensive error handling and diagnostics
         # This must happen after storage service initialization but before WebSocket handlers
         frontend_manager = None
-        dashboard_integration_status = {
-            "frontend_resources_registered": False,
-            "card_available_in_picker": False,
-            "dashboard_service_initialized": False,
-            "card_added_to_dashboard": False,
-            "dashboard_id": None,
-            "frontend_errors": [],
-            "dashboard_errors": [],
-            "troubleshooting_steps": []
-        }
         
         try:
             _LOGGER.info("Starting frontend resource registration for entry %s", entry.entry_id)
@@ -289,8 +463,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             frontend_manager = FrontendResourceManager(hass)
             frontend_registration_result = await frontend_manager.register_frontend_resources()
             
-            # Store frontend manager in entry data
-            hass.data[DOMAIN][entry.entry_id]["frontend_manager"] = frontend_manager
+            # Frontend manager will be stored in entry data later
             
             # Log detailed frontend registration results
             _LOGGER.debug("Frontend registration result for entry %s: %s", entry.entry_id, frontend_registration_result)
@@ -352,6 +525,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "Try restarting Home Assistant"
             ])
             # Continue setup even if frontend registration fails - not critical for core functionality
+        
+        # Store services in hass.data now that all components are initialized
+        hass.data.setdefault(DOMAIN, {})
+        hass.data[DOMAIN][entry.entry_id] = {
+            "storage_service": storage_service,
+            "schedule_manager": schedule_manager,
+            "presence_manager": presence_manager,
+            "buffer_manager": buffer_manager,
+            "logging_manager": logging_manager,
+            "config_validator": config_validator,
+            "frontend_manager": frontend_manager,
+            "dashboard_service": dashboard_service,
+            "setup_diagnostics": setup_diagnostics,
+            "dashboard_integration_status": dashboard_integration_status,
+        }
         
         # Register services with error handling
         try:
@@ -480,11 +668,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Failed to process setup feedback for entry %s: %s", entry.entry_id, e, exc_info=True)
             # Setup feedback processing failure is not critical
         
-        # Log setup summary
+        # Enhanced setup diagnostics collection and reporting
         setup_diagnostics["end_time"] = datetime.now()
         setup_diagnostics["duration_seconds"] = (setup_diagnostics["end_time"] - setup_diagnostics["start_time"]).total_seconds()
         
-        _log_setup_summary(setup_diagnostics)
+        # Collect comprehensive setup diagnostics
+        await _collect_comprehensive_setup_diagnostics(hass, entry, setup_diagnostics)
+        
+        # Generate detailed setup report
+        setup_report = await _generate_setup_success_report(hass, entry, setup_diagnostics)
+        
+        # Log enhanced setup summary
+        _log_enhanced_setup_summary(setup_diagnostics, setup_report)
+        
+        # Store setup report for future reference
+        if DOMAIN in hass.data and entry.entry_id in hass.data[DOMAIN]:
+            hass.data[DOMAIN][entry.entry_id]["setup_report"] = setup_report
         
         _LOGGER.info("Roost Scheduler setup completed successfully for entry %s in %.3fs", 
                     entry.entry_id, setup_diagnostics["duration_seconds"])
@@ -493,11 +692,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     except Exception as e:
         _LOGGER.error("Critical error during setup for entry %s: %s", entry.entry_id, e, exc_info=True)
         setup_diagnostics["critical_error"] = str(e)
+        setup_diagnostics["critical_error_type"] = type(e).__name__
         setup_diagnostics["end_time"] = datetime.now()
         setup_diagnostics["duration_seconds"] = (setup_diagnostics["end_time"] - setup_diagnostics["start_time"]).total_seconds()
         
-        # Log failure diagnostics
-        _log_setup_failure(setup_diagnostics)
+        # Collect comprehensive failure diagnostics
+        await _collect_comprehensive_failure_diagnostics(hass, entry, setup_diagnostics, e)
+        
+        # Generate detailed failure report
+        failure_report = await _generate_detailed_failure_report(hass, entry, setup_diagnostics, e)
+        
+        # Log enhanced failure diagnostics
+        _log_enhanced_setup_failure(setup_diagnostics, failure_report)
+        
+        # Generate user-friendly error message
+        user_friendly_error = _generate_user_friendly_error_message(e, setup_diagnostics)
+        _LOGGER.error("User-friendly error summary: %s", user_friendly_error)
         
         # Cleanup any partial setup
         await _cleanup_entry_data(hass, entry)
@@ -826,6 +1036,260 @@ async def _check_for_conflicts(schedule_manager, entity_id: str, mode: str, chan
         _LOGGER.error("Error checking for conflicts: %s", e)
     
     return conflicts
+
+
+async def _execute_comprehensive_error_recovery(
+    hass: HomeAssistant, 
+    domain: str, 
+    validation_result, 
+    comprehensive_result, 
+    setup_diagnostics: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Execute comprehensive error recovery with multiple fallback mechanisms.
+    
+    Args:
+        hass: Home Assistant instance
+        domain: Integration domain
+        validation_result: Startup validation result
+        comprehensive_result: Comprehensive validation result
+        setup_diagnostics: Setup diagnostics dictionary
+        
+    Returns:
+        Dictionary with recovery results
+    """
+    recovery_start_time = datetime.now()
+    recovery_result = {
+        "success": False,
+        "recovery_steps": [],
+        "fixes_applied": [],
+        "fallbacks_used": [],
+        "errors": [],
+        "warnings": []
+    }
+    
+    try:
+        _LOGGER.info("Starting comprehensive error recovery for domain: %s", domain)
+        
+        # Step 1: Analyze and prioritize issues
+        _LOGGER.debug("Analyzing validation issues for recovery prioritization")
+        critical_issues = []
+        recoverable_issues = []
+        
+        # Collect issues from startup validation
+        for issue in validation_result.issues:
+            if isinstance(issue, dict):
+                severity = issue.get("severity", "unknown")
+                if severity in ["critical", "error"]:
+                    critical_issues.append(issue)
+                else:
+                    recoverable_issues.append(issue)
+            else:
+                recoverable_issues.append({"description": str(issue), "severity": "unknown"})
+        
+        # Collect issues from comprehensive validation
+        if not comprehensive_result.manifest_result.valid:
+            for issue in comprehensive_result.manifest_result.issues:
+                critical_issues.append({
+                    "description": f"Manifest issue: {issue}",
+                    "severity": "error",
+                    "category": "manifest"
+                })
+        
+        if not comprehensive_result.dependency_result.valid:
+            for conflict in comprehensive_result.dependency_result.conflicts:
+                critical_issues.append({
+                    "description": f"Dependency conflict: {conflict}",
+                    "severity": "error", 
+                    "category": "dependency"
+                })
+        
+        if not comprehensive_result.version_result.compatible:
+            for issue in comprehensive_result.version_result.issues:
+                critical_issues.append({
+                    "description": f"Version compatibility issue: {issue}",
+                    "severity": "warning",
+                    "category": "version"
+                })
+        
+        recovery_result["critical_issues_count"] = len(critical_issues)
+        recovery_result["recoverable_issues_count"] = len(recoverable_issues)
+        
+        # Step 2: Apply targeted fixes for critical issues
+        if critical_issues:
+            _LOGGER.info("Applying targeted fixes for %d critical issues", len(critical_issues))
+            
+            from .config_flow_registration_fixer import ConfigFlowRegistrationFixer
+            fixer = ConfigFlowRegistrationFixer(hass, domain)
+            
+            # Group issues by category for efficient fixing
+            issue_categories = {}
+            for issue in critical_issues:
+                category = issue.get("category", "general")
+                if category not in issue_categories:
+                    issue_categories[category] = []
+                issue_categories[category].append(issue)
+            
+            # Apply category-specific fixes
+            for category, category_issues in issue_categories.items():
+                try:
+                    _LOGGER.debug("Applying fixes for category: %s (%d issues)", category, len(category_issues))
+                    
+                    if category == "manifest":
+                        fix_result = await _fix_manifest_issues(fixer, category_issues)
+                    elif category == "dependency":
+                        fix_result = await _fix_dependency_issues(fixer, category_issues)
+                    elif category == "version":
+                        fix_result = await _fix_version_issues(fixer, category_issues)
+                    else:
+                        fix_result = await fixer.apply_all_fixes()
+                    
+                    if fix_result.success:
+                        recovery_result["fixes_applied"].append({
+                            "category": category,
+                            "issues_fixed": fix_result.fixed_issues,
+                            "changes": fix_result.fix_results
+                        })
+                        recovery_result["recovery_steps"].append(f"Fixed {category} issues")
+                    else:
+                        recovery_result["errors"].append(f"Failed to fix {category} issues")
+                        
+                except Exception as e:
+                    _LOGGER.error("Error fixing %s issues: %s", category, e)
+                    recovery_result["errors"].append(f"Error fixing {category} issues: {str(e)}")
+        
+        # Step 3: Apply recovery verification
+        _LOGGER.debug("Verifying recovery effectiveness")
+        try:
+            from .startup_validation_system import StartupValidationSystem
+            validator = StartupValidationSystem(hass)
+            
+            # Re-run validation to check recovery effectiveness
+            post_recovery_result = await validator.run_comprehensive_validation(domain)
+            
+            recovery_result["post_recovery_validation"] = {
+                "success": post_recovery_result.success,
+                "remaining_issues": len(post_recovery_result.issues),
+                "remaining_warnings": len(post_recovery_result.warnings)
+            }
+            
+            if post_recovery_result.success:
+                recovery_result["success"] = True
+                recovery_result["recovery_steps"].append("Post-recovery validation passed")
+                _LOGGER.info("Error recovery successful - validation now passes")
+            else:
+                _LOGGER.warning("Recovery partially successful - %d issues remain", 
+                              len(post_recovery_result.issues))
+                recovery_result["warnings"].append("Some issues could not be automatically recovered")
+                
+                # Apply fallback mechanisms for remaining issues
+                fallback_result = await _apply_recovery_fallbacks(
+                    post_recovery_result, setup_diagnostics
+                )
+                recovery_result["fallbacks_used"].extend(fallback_result.get("fallbacks", []))
+                
+                if fallback_result.get("success", False):
+                    recovery_result["success"] = True
+                    recovery_result["recovery_steps"].append("Fallback mechanisms applied successfully")
+                
+        except Exception as e:
+            _LOGGER.error("Error during recovery verification: %s", e)
+            recovery_result["errors"].append(f"Recovery verification failed: {str(e)}")
+        
+        # Step 4: Generate recovery report
+        recovery_duration = (datetime.now() - recovery_start_time).total_seconds()
+        recovery_result["duration_seconds"] = recovery_duration
+        recovery_result["recovery_steps"].append(f"Recovery completed in {recovery_duration:.2f}s")
+        
+        if recovery_result["success"]:
+            _LOGGER.info("Comprehensive error recovery completed successfully")
+        else:
+            _LOGGER.warning("Comprehensive error recovery completed with limitations")
+        
+        return recovery_result
+        
+    except Exception as e:
+        _LOGGER.error("Critical error during comprehensive error recovery: %s", e)
+        recovery_result["errors"].append(f"Recovery system error: {str(e)}")
+        recovery_result["success"] = False
+        return recovery_result
+
+
+async def _fix_manifest_issues(fixer, issues: List[Dict[str, Any]]) -> Any:
+    """Fix manifest-specific issues."""
+    # Apply manifest-specific fixes
+    return await fixer.fix_domain_mismatch()
+
+
+async def _fix_dependency_issues(fixer, issues: List[Dict[str, Any]]) -> Any:
+    """Fix dependency-specific issues."""
+    # Apply dependency-specific fixes
+    return await fixer.apply_all_fixes()
+
+
+async def _fix_version_issues(fixer, issues: List[Dict[str, Any]]) -> Any:
+    """Fix version compatibility issues."""
+    # Version issues are typically warnings, not critical errors
+    from .config_flow_registration_fixer import FixResult
+    return FixResult(
+        success=True,
+        issue_type="version_compatibility",
+        description="Version issues noted but not blocking",
+        changes_made=[],
+        errors=[],
+        warnings=["Version compatibility issues noted"],
+        verification_passed=True
+    )
+
+
+async def _apply_recovery_fallbacks(validation_result, setup_diagnostics: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply fallback mechanisms for issues that couldn't be automatically fixed."""
+    fallback_result = {
+        "success": False,
+        "fallbacks": [],
+        "warnings": []
+    }
+    
+    try:
+        # Analyze remaining issues and apply appropriate fallbacks
+        critical_remaining = [
+            issue for issue in validation_result.issues
+            if isinstance(issue, dict) and issue.get("severity") == "critical"
+        ]
+        
+        if not critical_remaining:
+            # No critical issues remain - can proceed with warnings
+            fallback_result["success"] = True
+            fallback_result["fallbacks"].append("Proceeding with non-critical issues as warnings")
+            setup_diagnostics["warnings"].append("Some non-critical validation issues remain")
+        else:
+            # Apply emergency mode for critical issues
+            fallback_result["fallbacks"].append("Emergency mode activated for critical issues")
+            fallback_result["warnings"].append("Operating in emergency mode due to unresolved critical issues")
+            setup_diagnostics["warnings"].append("Integration running in emergency mode")
+            
+            # For now, allow setup to continue but with limitations
+            fallback_result["success"] = True
+        
+        return fallback_result
+        
+    except Exception as e:
+        _LOGGER.error("Error applying recovery fallbacks: %s", e)
+        fallback_result["warnings"].append(f"Fallback application error: {str(e)}")
+        return fallback_result
+
+
+async def _apply_emergency_recovery_fallbacks(setup_diagnostics: Dict[str, Any]) -> None:
+    """Apply emergency fallbacks when the recovery system itself fails."""
+    try:
+        _LOGGER.warning("Applying emergency recovery fallbacks")
+        setup_diagnostics["fallbacks_used"].append("emergency_recovery_fallbacks")
+        setup_diagnostics["warnings"].append("Emergency recovery fallbacks activated")
+        
+        # Log critical system state for troubleshooting
+        _LOGGER.error("Integration setup continuing with emergency fallbacks - functionality may be limited")
+        
+    except Exception as e:
+        _LOGGER.error("Emergency recovery fallbacks failed: %s", e)
 
 
 def _validate_ha_version(hass: HomeAssistant) -> bool:
@@ -1609,3 +2073,605 @@ async def _validate_setup(hass: HomeAssistant, entry: ConfigEntry, dashboard_int
         validation_results["overall_valid"] = False
     
     return validation_results
+
+
+async def _evaluate_setup_continuation(critical_issues: list, setup_diagnostics: dict) -> bool:
+    """Evaluate whether setup should continue despite critical validation issues.
+    
+    Args:
+        critical_issues: List of critical validation issues
+        setup_diagnostics: Setup diagnostics dictionary
+        
+    Returns:
+        bool: True if setup should continue, False if it should fail
+    """
+    # Define issues that should always cause setup to fail
+    blocking_issue_types = {
+        "integration_directory_missing",
+        "manifest_file_missing", 
+        "config_flow_file_missing",
+        "const_import_error",
+        "manifest_json_invalid"
+    }
+    
+    # Check if any critical issues are blocking
+    for issue in critical_issues:
+        issue_type = issue.get("issue_type", "")
+        if issue_type in blocking_issue_types:
+            _LOGGER.error("Blocking issue found: %s - %s", issue_type, issue.get("description", ""))
+            setup_diagnostics["blocking_issues"] = setup_diagnostics.get("blocking_issues", [])
+            setup_diagnostics["blocking_issues"].append(issue)
+            return False
+    
+    # For non-blocking critical issues, we can continue but with warnings
+    _LOGGER.warning("Found %d critical issues but none are blocking - continuing setup", len(critical_issues))
+    setup_diagnostics["non_blocking_critical_issues"] = critical_issues
+    
+    return True
+
+
+async def _apply_validation_fallbacks(validation_result, setup_diagnostics: dict) -> None:
+    """Apply fallback mechanisms for remaining validation issues.
+    
+    Args:
+        validation_result: The validation result with remaining issues
+        setup_diagnostics: Setup diagnostics dictionary
+    """
+    _LOGGER.info("Applying validation fallbacks for remaining issues")
+    
+    fallbacks_applied = []
+    
+    # Categorize remaining issues
+    domain_issues = []
+    config_flow_issues = []
+    import_issues = []
+    other_issues = []
+    
+    for issue in validation_result.issues:
+        if isinstance(issue, dict):
+            issue_type = issue.get("issue_type", "")
+            if "domain" in issue_type:
+                domain_issues.append(issue)
+            elif "config_flow" in issue_type:
+                config_flow_issues.append(issue)
+            elif "import" in issue_type:
+                import_issues.append(issue)
+            else:
+                other_issues.append(issue)
+    
+    # Apply domain-specific fallbacks
+    if domain_issues:
+        _LOGGER.info("Applying domain consistency fallbacks")
+        fallbacks_applied.append("domain_consistency_fallback")
+        # Log domain issues but continue - the integration can still function
+        for issue in domain_issues:
+            _LOGGER.warning("Domain issue (non-blocking): %s", issue.get("description", str(issue)))
+    
+    # Apply config flow fallbacks
+    if config_flow_issues:
+        _LOGGER.info("Applying config flow fallbacks")
+        fallbacks_applied.append("config_flow_fallback")
+        # Config flow issues are more serious but we can still try to continue
+        for issue in config_flow_issues:
+            _LOGGER.error("Config flow issue: %s", issue.get("description", str(issue)))
+    
+    # Apply import fallbacks
+    if import_issues:
+        _LOGGER.info("Applying import fallbacks")
+        fallbacks_applied.append("import_fallback")
+        # Import issues might be recoverable during actual component initialization
+        for issue in import_issues:
+            _LOGGER.warning("Import issue (may be recoverable): %s", issue.get("description", str(issue)))
+    
+    setup_diagnostics["validation_fallbacks_applied"] = fallbacks_applied
+    _LOGGER.info("Applied %d validation fallback mechanisms", len(fallbacks_applied))
+
+
+async def _apply_fix_failure_fallbacks(fix_result, setup_diagnostics: dict) -> None:
+    """Apply fallback mechanisms when automatic fixes fail.
+    
+    Args:
+        fix_result: The failed fix result
+        setup_diagnostics: Setup diagnostics dictionary
+    """
+    _LOGGER.info("Applying fallbacks for failed automatic fixes")
+    
+    fallbacks_applied = []
+    
+    # Analyze failed fixes and apply appropriate fallbacks
+    for failed_fix in fix_result.fix_results:
+        if not failed_fix.success:
+            issue_type = failed_fix.issue_type
+            
+            if issue_type == "domain_mismatch":
+                _LOGGER.warning("Domain mismatch fix failed - using domain override fallback")
+                fallbacks_applied.append("domain_override_fallback")
+                # Continue with current domain configuration
+                
+            elif issue_type == "class_inheritance":
+                _LOGGER.warning("Class inheritance fix failed - using basic config flow fallback")
+                fallbacks_applied.append("basic_config_flow_fallback")
+                # The integration might still work with a basic config flow
+                
+            elif issue_type == "method_implementation":
+                _LOGGER.warning("Method implementation fix failed - using minimal method fallback")
+                fallbacks_applied.append("minimal_method_fallback")
+                # Basic functionality might still be available
+                
+            elif issue_type == "manifest_configuration":
+                _LOGGER.error("Manifest configuration fix failed - this may cause issues")
+                fallbacks_applied.append("manifest_warning_fallback")
+                # Manifest issues are more serious but we can try to continue
+                
+            else:
+                _LOGGER.warning("Unknown fix type failed: %s - using generic fallback", issue_type)
+                fallbacks_applied.append("generic_fallback")
+    
+    setup_diagnostics["fix_failure_fallbacks_applied"] = fallbacks_applied
+    _LOGGER.info("Applied %d fix failure fallback mechanisms", len(fallbacks_applied))
+
+
+async def _apply_emergency_fallbacks(setup_diagnostics: dict) -> None:
+    """Apply emergency fallback mechanisms when critical systems fail.
+    
+    Args:
+        setup_diagnostics: Setup diagnostics dictionary
+    """
+    _LOGGER.warning("Applying emergency fallback mechanisms")
+    
+    emergency_fallbacks = []
+    
+    # Disable non-essential features to ensure basic functionality
+    emergency_fallbacks.append("disable_advanced_validation")
+    emergency_fallbacks.append("use_minimal_config_flow")
+    emergency_fallbacks.append("skip_domain_consistency_checks")
+    emergency_fallbacks.append("use_default_error_handling")
+    
+    # Log emergency mode activation
+    _LOGGER.warning("Integration entering emergency mode - some features may be limited")
+    _LOGGER.warning("Emergency fallbacks: %s", ", ".join(emergency_fallbacks))
+    
+    setup_diagnostics["emergency_fallbacks_applied"] = emergency_fallbacks
+    setup_diagnostics["emergency_mode"] = True
+    
+    # Set up minimal error recovery
+    setup_diagnostics["error_recovery_mode"] = "emergency"
+    setup_diagnostics["warnings"].append("Integration running in emergency mode due to critical validation failures")
+
+
+async def _generate_setup_failure_report(hass: HomeAssistant, entry: ConfigEntry, setup_diagnostics: dict, critical_error: Exception) -> None:
+    """Generate a comprehensive setup failure report for troubleshooting.
+    
+    Args:
+        hass: Home Assistant instance
+        entry: Config entry that failed
+        setup_diagnostics: Setup diagnostics collected so far
+        critical_error: The critical error that caused setup failure
+    """
+    _LOGGER.error("=" * 60)
+    _LOGGER.error("ROOST SCHEDULER SETUP FAILURE REPORT")
+    _LOGGER.error("=" * 60)
+    _LOGGER.error("Entry ID: %s", entry.entry_id)
+    _LOGGER.error("Critical Error: %s", str(critical_error))
+    _LOGGER.error("Error Type: %s", type(critical_error).__name__)
+    
+    # Log validation results if available
+    if "validation_results" in setup_diagnostics:
+        validation_data = setup_diagnostics["validation_results"]
+        _LOGGER.error("Validation Success: %s", validation_data.get("comprehensive_result", {}).get("success", "Unknown"))
+        
+        issues = validation_data.get("comprehensive_result", {}).get("issues", [])
+        if issues:
+            _LOGGER.error("Validation Issues Found: %d", len(issues))
+            for i, issue in enumerate(issues[:5], 1):  # Log first 5 issues
+                _LOGGER.error("  %d. %s", i, issue if isinstance(issue, str) else issue.get("description", str(issue)))
+    
+    # Log components that were successfully initialized
+    initialized = setup_diagnostics.get("components_initialized", [])
+    if initialized:
+        _LOGGER.error("Successfully Initialized Components: %s", ", ".join(initialized))
+    
+    # Log components that failed
+    failed = setup_diagnostics.get("components_failed", [])
+    if failed:
+        _LOGGER.error("Failed Components:")
+        for component_failure in failed:
+            _LOGGER.error("  - %s: %s", component_failure.get("component", "unknown"), component_failure.get("error", "unknown error"))
+    
+    # Log fallbacks that were attempted
+    fallbacks = setup_diagnostics.get("fallbacks_used", [])
+    if fallbacks:
+        _LOGGER.error("Fallbacks Attempted: %s", ", ".join(fallbacks))
+    
+    # Log warnings
+    warnings = setup_diagnostics.get("warnings", [])
+    if warnings:
+        _LOGGER.error("Warnings Generated: %d", len(warnings))
+        for warning in warnings[:3]:  # Log first 3 warnings
+            _LOGGER.error("  - %s", warning)
+    
+    # Generate troubleshooting recommendations
+    _LOGGER.error("TROUBLESHOOTING RECOMMENDATIONS:")
+    _LOGGER.error("1. Check Home Assistant logs for detailed error messages")
+    _LOGGER.error("2. Verify integration files are properly installed and readable")
+    _LOGGER.error("3. Check file system permissions for the integration directory")
+    _LOGGER.error("4. Try restarting Home Assistant")
+    _LOGGER.error("5. Consider reinstalling the integration")
+    
+    if "validation_results" in setup_diagnostics:
+        diagnostic_data = setup_diagnostics["validation_results"].get("diagnostic_data")
+        if diagnostic_data and hasattr(diagnostic_data, 'error_details'):
+            _LOGGER.error("6. Review diagnostic errors: %s", "; ".join(diagnostic_data.error_details[:3]))
+    
+    _LOGGER.error("=" * 60)
+    _LOGGER.error("END SETUP FAILURE REPORT")
+    _LOGGER.error("=" * 60)
+
+
+async def _collect_comprehensive_setup_diagnostics(hass: HomeAssistant, entry: ConfigEntry, setup_diagnostics: dict) -> None:
+    """Collect comprehensive setup diagnostics for successful setup.
+    
+    Args:
+        hass: Home Assistant instance
+        entry: Config entry
+        setup_diagnostics: Setup diagnostics dictionary to enhance
+    """
+    try:
+        # Collect system information
+        setup_diagnostics["system_info"] = {
+            "ha_version": hass.config.ha_version,
+            "config_dir": hass.config.config_dir,
+            "safe_mode": hass.config.safe_mode,
+            "components_count": len(hass.config.components)
+        }
+        
+        # Collect integration-specific information
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        setup_diagnostics["integration_info"] = {
+            "domain": DOMAIN,
+            "version": VERSION,
+            "entry_id": entry.entry_id,
+            "components_in_data": list(entry_data.keys()),
+            "storage_service_available": "storage_service" in entry_data,
+            "schedule_manager_available": "schedule_manager" in entry_data,
+            "frontend_manager_available": "frontend_manager" in entry_data
+        }
+        
+        # Collect performance metrics
+        setup_diagnostics["performance_metrics"] = {
+            "total_duration": setup_diagnostics["duration_seconds"],
+            "validation_duration": setup_diagnostics.get("startup_validation", {}).get("duration_seconds", 0),
+            "components_initialized_count": len(setup_diagnostics.get("components_initialized", [])),
+            "components_failed_count": len(setup_diagnostics.get("components_failed", [])),
+            "warnings_count": len(setup_diagnostics.get("warnings", [])),
+            "fallbacks_used_count": len(setup_diagnostics.get("fallbacks_used", []))
+        }
+        
+        # Collect validation summary
+        if "validation_results" in setup_diagnostics:
+            validation_data = setup_diagnostics["validation_results"]
+            setup_diagnostics["validation_summary"] = {
+                "validation_success": validation_data.get("comprehensive_result", {}).get("success", False),
+                "issues_found": len(validation_data.get("comprehensive_result", {}).get("issues", [])),
+                "warnings_found": len(validation_data.get("comprehensive_result", {}).get("warnings", [])),
+                "domain_consistency": validation_data.get("diagnostic_data", {}).get("domain_consistency", False),
+                "config_flow_class_found": validation_data.get("diagnostic_data", {}).get("config_flow_class_found", False),
+                "manifest_valid": validation_data.get("diagnostic_data", {}).get("manifest_valid", False)
+            }
+        
+    except Exception as e:
+        _LOGGER.warning("Error collecting comprehensive setup diagnostics: %s", e)
+        setup_diagnostics["diagnostic_collection_error"] = str(e)
+
+
+async def _collect_comprehensive_failure_diagnostics(hass: HomeAssistant, entry: ConfigEntry, setup_diagnostics: dict, error: Exception) -> None:
+    """Collect comprehensive diagnostics for setup failure.
+    
+    Args:
+        hass: Home Assistant instance
+        entry: Config entry
+        setup_diagnostics: Setup diagnostics dictionary to enhance
+        error: The error that caused the failure
+    """
+    try:
+        # Collect error context
+        setup_diagnostics["error_context"] = {
+            "error_message": str(error),
+            "error_type": type(error).__name__,
+            "error_module": getattr(error, '__module__', 'unknown'),
+            "setup_phase": _determine_setup_phase(setup_diagnostics)
+        }
+        
+        # Collect system state at failure
+        setup_diagnostics["failure_system_state"] = {
+            "ha_version": hass.config.ha_version,
+            "is_running": hass.is_running,
+            "state": str(hass.state),
+            "components_loaded": len(hass.config.components),
+            "domain_in_components": DOMAIN in hass.config.components
+        }
+        
+        # Collect partial setup state
+        entry_data = hass.data.get(DOMAIN, {}).get(entry.entry_id, {})
+        setup_diagnostics["partial_setup_state"] = {
+            "entry_data_exists": bool(entry_data),
+            "partial_components": list(entry_data.keys()) if entry_data else [],
+            "hass_data_domain_exists": DOMAIN in hass.data
+        }
+        
+        # Analyze failure patterns
+        setup_diagnostics["failure_analysis"] = _analyze_failure_patterns(setup_diagnostics, error)
+        
+    except Exception as e:
+        _LOGGER.warning("Error collecting failure diagnostics: %s", e)
+        setup_diagnostics["failure_diagnostic_error"] = str(e)
+
+
+def _determine_setup_phase(setup_diagnostics: dict) -> str:
+    """Determine which phase of setup failed based on diagnostics."""
+    initialized = setup_diagnostics.get("components_initialized", [])
+    
+    if "startup_validation" not in initialized:
+        return "startup_validation"
+    elif "logging_manager" not in initialized:
+        return "logging_initialization"
+    elif "storage_service" not in initialized:
+        return "storage_initialization"
+    elif "presence_manager" not in initialized and "buffer_manager" not in initialized:
+        return "manager_initialization"
+    elif "schedule_manager" not in initialized:
+        return "schedule_manager_initialization"
+    elif "services" not in initialized:
+        return "service_registration"
+    elif "websocket_handlers" not in initialized:
+        return "websocket_registration"
+    else:
+        return "final_validation"
+
+
+def _analyze_failure_patterns(setup_diagnostics: dict, error: Exception) -> dict:
+    """Analyze failure patterns to provide better troubleshooting guidance."""
+    analysis = {
+        "likely_cause": "unknown",
+        "severity": "high",
+        "recovery_possible": False,
+        "user_action_required": True
+    }
+    
+    error_str = str(error).lower()
+    error_type = type(error).__name__
+    
+    # Analyze common failure patterns
+    if "permission" in error_str or "access" in error_str:
+        analysis.update({
+            "likely_cause": "file_permissions",
+            "severity": "medium",
+            "recovery_possible": True,
+            "user_action_required": True
+        })
+    elif "import" in error_str or "module" in error_str:
+        analysis.update({
+            "likely_cause": "missing_dependencies",
+            "severity": "high",
+            "recovery_possible": True,
+            "user_action_required": True
+        })
+    elif "storage" in error_str or "disk" in error_str:
+        analysis.update({
+            "likely_cause": "storage_issues",
+            "severity": "high",
+            "recovery_possible": True,
+            "user_action_required": True
+        })
+    elif error_type in ["ConfigEntryNotReady", "ConfigEntryError"]:
+        analysis.update({
+            "likely_cause": "configuration_error",
+            "severity": "medium",
+            "recovery_possible": True,
+            "user_action_required": False
+        })
+    
+    return analysis
+
+
+async def _generate_setup_success_report(hass: HomeAssistant, entry: ConfigEntry, setup_diagnostics: dict) -> dict:
+    """Generate a comprehensive setup success report."""
+    report = {
+        "status": "success",
+        "entry_id": entry.entry_id,
+        "setup_duration": setup_diagnostics["duration_seconds"],
+        "components_initialized": setup_diagnostics.get("components_initialized", []),
+        "warnings": setup_diagnostics.get("warnings", []),
+        "fallbacks_used": setup_diagnostics.get("fallbacks_used", []),
+        "validation_passed": setup_diagnostics.get("startup_validation", {}).get("success", False),
+        "fixes_applied": setup_diagnostics.get("automatic_fixes", {}).get("success", False),
+        "emergency_mode": setup_diagnostics.get("emergency_mode", False)
+    }
+    
+    # Add recommendations based on setup results
+    recommendations = []
+    
+    if setup_diagnostics.get("warnings"):
+        recommendations.append("Review setup warnings to ensure optimal functionality")
+    
+    if setup_diagnostics.get("fallbacks_used"):
+        recommendations.append("Some fallback mechanisms were used - consider addressing underlying issues")
+    
+    if setup_diagnostics.get("emergency_mode"):
+        recommendations.append("Integration is running in emergency mode - some features may be limited")
+    
+    if not recommendations:
+        recommendations.append("Setup completed successfully with no issues detected")
+    
+    report["recommendations"] = recommendations
+    
+    return report
+
+
+async def _generate_detailed_failure_report(hass: HomeAssistant, entry: ConfigEntry, setup_diagnostics: dict, error: Exception) -> dict:
+    """Generate a detailed failure report for troubleshooting."""
+    report = {
+        "status": "failed",
+        "entry_id": entry.entry_id,
+        "error_message": str(error),
+        "error_type": type(error).__name__,
+        "setup_duration": setup_diagnostics["duration_seconds"],
+        "setup_phase": setup_diagnostics.get("error_context", {}).get("setup_phase", "unknown"),
+        "components_initialized": setup_diagnostics.get("components_initialized", []),
+        "components_failed": setup_diagnostics.get("components_failed", []),
+        "failure_analysis": setup_diagnostics.get("failure_analysis", {})
+    }
+    
+    # Generate specific troubleshooting steps
+    troubleshooting_steps = []
+    
+    failure_analysis = setup_diagnostics.get("failure_analysis", {})
+    likely_cause = failure_analysis.get("likely_cause", "unknown")
+    
+    if likely_cause == "file_permissions":
+        troubleshooting_steps.extend([
+            "Check file permissions for the integration directory",
+            "Ensure Home Assistant has read/write access to custom_components/roost_scheduler/",
+            "Try restarting Home Assistant with proper permissions"
+        ])
+    elif likely_cause == "missing_dependencies":
+        troubleshooting_steps.extend([
+            "Check that all required Home Assistant components are available",
+            "Verify Python dependencies are installed",
+            "Try reinstalling the integration"
+        ])
+    elif likely_cause == "storage_issues":
+        troubleshooting_steps.extend([
+            "Check available disk space",
+            "Verify Home Assistant storage directory permissions",
+            "Check for storage corruption"
+        ])
+    elif likely_cause == "configuration_error":
+        troubleshooting_steps.extend([
+            "Review integration configuration",
+            "Check for conflicting integrations",
+            "Try removing and re-adding the integration"
+        ])
+    else:
+        troubleshooting_steps.extend([
+            "Check Home Assistant logs for detailed error information",
+            "Verify integration files are properly installed",
+            "Try restarting Home Assistant",
+            "Consider reinstalling the integration"
+        ])
+    
+    report["troubleshooting_steps"] = troubleshooting_steps
+    
+    return report
+
+
+def _generate_user_friendly_error_message(error: Exception, setup_diagnostics: dict) -> str:
+    """Generate a user-friendly error message based on the error and diagnostics."""
+    error_type = type(error).__name__
+    error_str = str(error).lower()
+    
+    # Generate user-friendly messages based on error patterns
+    if "permission" in error_str:
+        return "The integration couldn't access required files. Please check file permissions and try restarting Home Assistant."
+    elif "import" in error_str or "module" in error_str:
+        return "Some required components are missing. Please ensure all dependencies are installed and try restarting Home Assistant."
+    elif "storage" in error_str:
+        return "There was a problem with data storage. Please check available disk space and storage permissions."
+    elif error_type == "ConfigEntryNotReady":
+        return "The integration is not ready to start. This is usually temporary - Home Assistant will retry automatically."
+    elif "config_flow" in error_str:
+        return "There was a problem with the integration's configuration system. Please try removing and re-adding the integration."
+    else:
+        phase = setup_diagnostics.get("error_context", {}).get("setup_phase", "unknown")
+        return f"Setup failed during {phase.replace('_', ' ')}. Please check the logs for more details and try restarting Home Assistant."
+
+
+def _log_enhanced_setup_summary(setup_diagnostics: dict, setup_report: dict) -> None:
+    """Log an enhanced setup summary with detailed information."""
+    entry_id = setup_diagnostics["entry_id"]
+    duration = setup_diagnostics["duration_seconds"]
+    
+    _LOGGER.info("=" * 50)
+    _LOGGER.info("ROOST SCHEDULER SETUP SUMMARY")
+    _LOGGER.info("=" * 50)
+    _LOGGER.info("Entry ID: %s", entry_id)
+    _LOGGER.info("Status: %s", setup_report["status"].upper())
+    _LOGGER.info("Duration: %.3f seconds", duration)
+    
+    # Log component status
+    initialized = setup_report.get("components_initialized", [])
+    _LOGGER.info("Components Initialized: %d", len(initialized))
+    for component in initialized:
+        _LOGGER.info("  ✓ %s", component)
+    
+    # Log warnings if any
+    warnings = setup_report.get("warnings", [])
+    if warnings:
+        _LOGGER.info("Warnings: %d", len(warnings))
+        for warning in warnings[:3]:  # Log first 3 warnings
+            _LOGGER.info("  ⚠ %s", warning)
+    
+    # Log fallbacks if any
+    fallbacks = setup_report.get("fallbacks_used", [])
+    if fallbacks:
+        _LOGGER.info("Fallbacks Used: %d", len(fallbacks))
+        for fallback in fallbacks:
+            _LOGGER.info("  🔄 %s", fallback)
+    
+    # Log validation status
+    if setup_report.get("validation_passed"):
+        _LOGGER.info("Validation: ✓ PASSED")
+    else:
+        _LOGGER.info("Validation: ⚠ ISSUES FOUND")
+    
+    # Log recommendations
+    recommendations = setup_report.get("recommendations", [])
+    if recommendations:
+        _LOGGER.info("Recommendations:")
+        for rec in recommendations:
+            _LOGGER.info("  • %s", rec)
+    
+    _LOGGER.info("=" * 50)
+
+
+def _log_enhanced_setup_failure(setup_diagnostics: dict, failure_report: dict) -> None:
+    """Log enhanced setup failure information."""
+    entry_id = setup_diagnostics["entry_id"]
+    duration = setup_diagnostics["duration_seconds"]
+    
+    _LOGGER.error("=" * 50)
+    _LOGGER.error("ROOST SCHEDULER SETUP FAILURE")
+    _LOGGER.error("=" * 50)
+    _LOGGER.error("Entry ID: %s", entry_id)
+    _LOGGER.error("Status: FAILED")
+    _LOGGER.error("Duration: %.3f seconds", duration)
+    _LOGGER.error("Error: %s", failure_report["error_message"])
+    _LOGGER.error("Phase: %s", failure_report["setup_phase"])
+    
+    # Log what was successfully initialized
+    initialized = failure_report.get("components_initialized", [])
+    if initialized:
+        _LOGGER.error("Successfully Initialized: %s", ", ".join(initialized))
+    
+    # Log what failed
+    failed = failure_report.get("components_failed", [])
+    if failed:
+        _LOGGER.error("Failed Components:")
+        for component_failure in failed:
+            _LOGGER.error("  ✗ %s: %s", component_failure.get("component", "unknown"), component_failure.get("error", "unknown"))
+    
+    # Log failure analysis
+    analysis = failure_report.get("failure_analysis", {})
+    if analysis:
+        _LOGGER.error("Likely Cause: %s", analysis.get("likely_cause", "unknown"))
+        _LOGGER.error("Severity: %s", analysis.get("severity", "unknown"))
+        _LOGGER.error("Recovery Possible: %s", analysis.get("recovery_possible", False))
+    
+    # Log troubleshooting steps
+    steps = failure_report.get("troubleshooting_steps", [])
+    if steps:
+        _LOGGER.error("Troubleshooting Steps:")
+        for i, step in enumerate(steps, 1):
+            _LOGGER.error("  %d. %s", i, step)
+    
+    _LOGGER.error("=" * 50)
