@@ -135,7 +135,7 @@ class SetupFeedbackManager:
         
         return diagnostics    
     
-def generate_next_steps_guidance(
+    def generate_next_steps_guidance(
         self,
         dashboard_integration_status: bool,
         card_registered: bool,

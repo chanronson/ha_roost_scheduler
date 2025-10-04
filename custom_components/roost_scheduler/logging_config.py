@@ -24,11 +24,17 @@ DEFAULT_LOG_CONFIG = {
     "debug_manual_changes": False,
     "debug_websocket_events": False,
     "debug_storage_operations": False,
+    "debug_config_flow_registration": False,
+    "debug_validation_checks": False,
+    "debug_diagnostic_collection": False,
+    "debug_integration_setup": False,
     "performance_monitoring": False,
     "log_to_file": False,
     "log_file_path": "/config/roost_scheduler.log",
     "max_log_file_size_mb": 10,
-    "log_retention_days": 7
+    "log_retention_days": 7,
+    "config_flow_logging_enabled": True,
+    "detailed_error_reporting": True
 }
 
 
@@ -96,6 +102,20 @@ class LoggingManager:
             
             if hasattr(storage, 'DEBUG_STORAGE_OPERATIONS'):
                 storage.DEBUG_STORAGE_OPERATIONS = self._config["debug_storage_operations"]
+            
+            # Set config flow debug flags
+            try:
+                from . import config_flow_validator
+                from . import integration_diagnostics
+                
+                if hasattr(config_flow_validator, 'DEBUG_CONFIG_FLOW_REGISTRATION'):
+                    config_flow_validator.DEBUG_CONFIG_FLOW_REGISTRATION = self._config["debug_config_flow_registration"]
+                
+                if hasattr(integration_diagnostics, 'DEBUG_DIAGNOSTIC_COLLECTION'):
+                    integration_diagnostics.DEBUG_DIAGNOSTIC_COLLECTION = self._config["debug_diagnostic_collection"]
+                    
+            except ImportError:
+                pass  # Config flow modules may not be available yet
                 
         except ImportError as e:
             _LOGGER.warning("Could not set debug flags: %s", e)
@@ -166,7 +186,12 @@ class LoggingManager:
             "debug_manual_changes": True,
             "debug_websocket_events": True,
             "debug_storage_operations": True,
-            "performance_monitoring": True
+            "debug_config_flow_registration": True,
+            "debug_validation_checks": True,
+            "debug_diagnostic_collection": True,
+            "debug_integration_setup": True,
+            "performance_monitoring": True,
+            "detailed_error_reporting": True
         }
         
         await self.update_config(debug_config)
@@ -192,7 +217,12 @@ class LoggingManager:
             "debug_manual_changes": False,
             "debug_websocket_events": False,
             "debug_storage_operations": False,
-            "performance_monitoring": False
+            "debug_config_flow_registration": False,
+            "debug_validation_checks": False,
+            "debug_diagnostic_collection": False,
+            "debug_integration_setup": False,
+            "performance_monitoring": False,
+            "detailed_error_reporting": True  # Keep this enabled for troubleshooting
         }
         
         await self.update_config(normal_config)
@@ -220,8 +250,80 @@ class LoggingManager:
             "debug_flags": {k: v for k, v in self._config.items() if k.startswith("debug_")},
             "file_logging": self._config["log_to_file"],
             "performance_monitoring": self._config["performance_monitoring"],
+            "config_flow_logging_enabled": self._config["config_flow_logging_enabled"],
+            "detailed_error_reporting": self._config["detailed_error_reporting"],
             "log_file_path": self._config["log_file_path"] if self._config["log_to_file"] else None
         }
+    
+    async def enable_config_flow_debug(self) -> None:
+        """Enable detailed config flow debugging."""
+        config_flow_debug = {
+            "debug_config_flow_registration": True,
+            "debug_validation_checks": True,
+            "debug_diagnostic_collection": True,
+            "debug_integration_setup": True,
+            "detailed_error_reporting": True,
+            "config_flow_logging_enabled": True
+        }
+        
+        await self.update_config(config_flow_debug)
+        _LOGGER.info("Config flow debug logging enabled")
+    
+    async def disable_config_flow_debug(self) -> None:
+        """Disable config flow debugging."""
+        config_flow_debug = {
+            "debug_config_flow_registration": False,
+            "debug_validation_checks": False,
+            "debug_diagnostic_collection": False,
+            "debug_integration_setup": False
+        }
+        
+        await self.update_config(config_flow_debug)
+        _LOGGER.info("Config flow debug logging disabled")
+    
+    def log_config_flow_event(self, event_type: str, message: str, **kwargs) -> None:
+        """Log config flow events if debugging is enabled."""
+        if not self._config.get("debug_config_flow_registration", False):
+            return
+        
+        extra_info = " ".join([f"{k}={v}" for k, v in kwargs.items()])
+        if extra_info:
+            message = f"{message} ({extra_info})"
+        
+        _LOGGER.debug("CONFIG_FLOW[%s]: %s", event_type, message)
+    
+    def log_validation_event(self, validation_type: str, message: str, **kwargs) -> None:
+        """Log validation events if debugging is enabled."""
+        if not self._config.get("debug_validation_checks", False):
+            return
+        
+        extra_info = " ".join([f"{k}={v}" for k, v in kwargs.items()])
+        if extra_info:
+            message = f"{message} ({extra_info})"
+        
+        _LOGGER.debug("VALIDATION[%s]: %s", validation_type, message)
+    
+    def log_diagnostic_event(self, diagnostic_type: str, message: str, **kwargs) -> None:
+        """Log diagnostic events if debugging is enabled."""
+        if not self._config.get("debug_diagnostic_collection", False):
+            return
+        
+        extra_info = " ".join([f"{k}={v}" for k, v in kwargs.items()])
+        if extra_info:
+            message = f"{message} ({extra_info})"
+        
+        _LOGGER.debug("DIAGNOSTIC[%s]: %s", diagnostic_type, message)
+    
+    def log_setup_event(self, setup_phase: str, message: str, **kwargs) -> None:
+        """Log integration setup events if debugging is enabled."""
+        if not self._config.get("debug_integration_setup", False):
+            return
+        
+        extra_info = " ".join([f"{k}={v}" for k, v in kwargs.items()])
+        if extra_info:
+            message = f"{message} ({extra_info})"
+        
+        _LOGGER.debug("SETUP[%s]: %s", setup_phase, message)
 
 
 def setup_environment_debug() -> None:
@@ -231,6 +333,10 @@ def setup_environment_debug() -> None:
         "ROOST_DEBUG_SCHEDULE": "debug_schedule_evaluation",
         "ROOST_DEBUG_BUFFER": "debug_buffer_decisions", 
         "ROOST_DEBUG_PRESENCE": "debug_presence_evaluation",
+        "ROOST_DEBUG_CONFIG_FLOW": "debug_config_flow_registration",
+        "ROOST_DEBUG_VALIDATION": "debug_validation_checks",
+        "ROOST_DEBUG_DIAGNOSTICS": "debug_diagnostic_collection",
+        "ROOST_DEBUG_SETUP": "debug_integration_setup",
         "ROOST_DEBUG_ALL": "all"
     }
     
@@ -248,6 +354,16 @@ def setup_environment_debug() -> None:
                 presence_manager.DEBUG_ENTITY_STATES = True
                 buffer_manager.DEBUG_BUFFER_LOGIC = True
                 buffer_manager.DEBUG_MANUAL_CHANGES = True
+                
+                # Enable config flow debug flags
+                try:
+                    from . import config_flow_validator, integration_diagnostics
+                    if hasattr(config_flow_validator, 'DEBUG_CONFIG_FLOW_REGISTRATION'):
+                        config_flow_validator.DEBUG_CONFIG_FLOW_REGISTRATION = True
+                    if hasattr(integration_diagnostics, 'DEBUG_DIAGNOSTIC_COLLECTION'):
+                        integration_diagnostics.DEBUG_DIAGNOSTIC_COLLECTION = True
+                except ImportError:
+                    pass
             else:
                 # Enable specific debug flag
                 try:
@@ -260,6 +376,12 @@ def setup_environment_debug() -> None:
                     elif "presence" in debug_flag:
                         from . import presence_manager
                         setattr(presence_manager, debug_flag.upper(), True)
+                    elif "config_flow" in debug_flag:
+                        from . import config_flow_validator
+                        setattr(config_flow_validator, debug_flag.upper(), True)
+                    elif "diagnostic" in debug_flag:
+                        from . import integration_diagnostics
+                        setattr(integration_diagnostics, debug_flag.upper(), True)
                 except ImportError:
                     pass
 
