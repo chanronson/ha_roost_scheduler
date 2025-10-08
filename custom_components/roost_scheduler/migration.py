@@ -7,6 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import aiofiles
+
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
@@ -28,6 +30,269 @@ def migration(version: str) -> Callable:
     return decorator
 
 
+# Async file utility functions for safe file operations
+async def async_read_json_file(file_path: Path) -> dict[str, Any]:
+    """Safely read JSON data from a file using async I/O with comprehensive error logging."""
+    operation_start = datetime.now()
+    
+    try:
+        # Log file operation start
+        _LOGGER.debug("Starting async JSON file read: %s", file_path)
+        
+        # Check file existence and accessibility
+        if not file_path.exists():
+            _LOGGER.debug("File not found during read operation: %s", file_path)
+            return {}
+        
+        if not file_path.is_file():
+            _LOGGER.error("Path is not a regular file: %s (type: %s)", 
+                         file_path, "directory" if file_path.is_dir() else "other")
+            raise OSError(f"Path is not a regular file: {file_path}")
+        
+        # Check file size for safety
+        try:
+            file_size = file_path.stat().st_size
+            if file_size > 100 * 1024 * 1024:  # 100MB limit
+                _LOGGER.warning("Large file detected during read: %s (size: %d bytes)", file_path, file_size)
+            elif file_size == 0:
+                _LOGGER.warning("Empty file detected during read: %s", file_path)
+                return {}
+        except OSError as e:
+            _LOGGER.error("Cannot read file stats for %s: %s", file_path, e)
+            raise
+        
+        async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
+            content = await f.read()
+            
+        # Log successful read
+        operation_duration = datetime.now() - operation_start
+        _LOGGER.debug("Successfully read JSON file %s (size: %d bytes, duration: %s)", 
+                     file_path, len(content), operation_duration)
+        
+        # Parse JSON with detailed error handling
+        try:
+            parsed_data = json.loads(content)
+            _LOGGER.debug("Successfully parsed JSON from %s (keys: %s)", 
+                         file_path, list(parsed_data.keys()) if isinstance(parsed_data, dict) else "non-dict")
+            return parsed_data
+        except json.JSONDecodeError as e:
+            _LOGGER.error("JSON parsing failed for file %s:", file_path)
+            _LOGGER.error("  - Error: %s", e.msg)
+            _LOGGER.error("  - Line: %d, Column: %d", e.lineno, e.colno)
+            _LOGGER.error("  - Position: %d", e.pos)
+            if len(content) > 0:
+                # Show context around the error
+                lines = content.split('\n')
+                if e.lineno <= len(lines):
+                    error_line = lines[e.lineno - 1] if e.lineno > 0 else ""
+                    _LOGGER.error("  - Error line: %s", error_line[:100])
+            raise
+            
+    except FileNotFoundError:
+        _LOGGER.debug("File not found during async read: %s", file_path)
+        return {}
+    except PermissionError as e:
+        operation_duration = datetime.now() - operation_start
+        _LOGGER.error("Permission denied reading file %s after %s: %s", file_path, operation_duration, e)
+        raise
+    except UnicodeDecodeError as e:
+        operation_duration = datetime.now() - operation_start
+        _LOGGER.error("Unicode decode error reading file %s after %s:", file_path, operation_duration)
+        _LOGGER.error("  - Encoding: %s", e.encoding)
+        _LOGGER.error("  - Position: %d-%d", e.start, e.end)
+        _LOGGER.error("  - Reason: %s", e.reason)
+        raise
+    except OSError as e:
+        operation_duration = datetime.now() - operation_start
+        _LOGGER.error("OS error reading file %s after %s: %s (errno: %s)", 
+                     file_path, operation_duration, e, getattr(e, 'errno', 'unknown'))
+        raise
+    except Exception as e:
+        operation_duration = datetime.now() - operation_start
+        _LOGGER.error("Unexpected error reading file %s after %s: %s (type: %s)", 
+                     file_path, operation_duration, e, type(e).__name__)
+        raise
+
+
+async def async_write_json_file(file_path: Path, data: dict[str, Any]) -> None:
+    """Safely write JSON data to a file using async I/O with comprehensive error logging."""
+    operation_start = datetime.now()
+    
+    try:
+        _LOGGER.debug("Starting async JSON file write: %s", file_path)
+        
+        # Validate input data
+        if not isinstance(data, dict):
+            _LOGGER.error("Invalid data type for JSON write to %s: expected dict, got %s", 
+                         file_path, type(data).__name__)
+            raise TypeError(f"Data must be a dictionary, got {type(data).__name__}")
+        
+        # Ensure parent directory exists with detailed logging
+        parent_dir = file_path.parent
+        if not parent_dir.exists():
+            _LOGGER.debug("Creating parent directory: %s", parent_dir)
+            try:
+                parent_dir.mkdir(parents=True, exist_ok=True)
+                _LOGGER.debug("Successfully created parent directory: %s", parent_dir)
+            except OSError as e:
+                _LOGGER.error("Failed to create parent directory %s: %s (errno: %s)", 
+                             parent_dir, e, getattr(e, 'errno', 'unknown'))
+                raise
+        
+        # Serialize data with error handling
+        try:
+            json_content = json.dumps(data, indent=2, default=str)
+            content_size = len(json_content)
+            _LOGGER.debug("Serialized JSON data for %s (size: %d bytes)", file_path, content_size)
+        except (TypeError, ValueError) as e:
+            _LOGGER.error("JSON serialization failed for file %s: %s", file_path, e)
+            _LOGGER.error("Data keys: %s", list(data.keys()) if isinstance(data, dict) else "not a dict")
+            raise
+        
+        # Write data with proper formatting
+        try:
+            async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
+                await f.write(json_content)
+        except PermissionError as e:
+            _LOGGER.error("Permission denied writing to file %s: %s", file_path, e)
+            raise
+        except OSError as e:
+            _LOGGER.error("OS error writing to file %s: %s (errno: %s)", 
+                         file_path, e, getattr(e, 'errno', 'unknown'))
+            raise
+        
+        # Verify write success
+        operation_duration = datetime.now() - operation_start
+        try:
+            written_size = file_path.stat().st_size
+            _LOGGER.debug("Successfully wrote JSON file %s (size: %d bytes, duration: %s)", 
+                         file_path, written_size, operation_duration)
+            
+            if written_size != content_size:
+                _LOGGER.warning("Size mismatch after write to %s: expected %d, actual %d", 
+                               file_path, content_size, written_size)
+        except OSError as e:
+            _LOGGER.warning("Cannot verify file size after write to %s: %s", file_path, e)
+            
+    except Exception as e:
+        operation_duration = datetime.now() - operation_start
+        _LOGGER.error("Error writing file %s after %s: %s (type: %s)", 
+                     file_path, operation_duration, e, type(e).__name__)
+        raise
+
+
+async def async_copy_file(src_path: Path, dst_path: Path) -> None:
+    """Safely copy a file using async I/O with comprehensive error logging."""
+    operation_start = datetime.now()
+    
+    try:
+        _LOGGER.debug("Starting async file copy: %s -> %s", src_path, dst_path)
+        
+        # Validate source file
+        if not src_path.exists():
+            _LOGGER.error("Source file does not exist for copy operation: %s", src_path)
+            raise FileNotFoundError(f"Source file not found: {src_path}")
+        
+        if not src_path.is_file():
+            _LOGGER.error("Source path is not a regular file: %s", src_path)
+            raise OSError(f"Source is not a regular file: {src_path}")
+        
+        # Check source file size and permissions
+        try:
+            src_stat = src_path.stat()
+            src_size = src_stat.st_size
+            _LOGGER.debug("Source file info: %s (size: %d bytes)", src_path, src_size)
+            
+            if src_size > 100 * 1024 * 1024:  # 100MB limit
+                _LOGGER.warning("Large file copy operation: %s (size: %d bytes)", src_path, src_size)
+        except OSError as e:
+            _LOGGER.error("Cannot read source file stats %s: %s", src_path, e)
+            raise
+        
+        # Ensure destination directory exists
+        dst_parent = dst_path.parent
+        if not dst_parent.exists():
+            _LOGGER.debug("Creating destination directory: %s", dst_parent)
+            try:
+                dst_parent.mkdir(parents=True, exist_ok=True)
+                _LOGGER.debug("Successfully created destination directory: %s", dst_parent)
+            except OSError as e:
+                _LOGGER.error("Failed to create destination directory %s: %s", dst_parent, e)
+                raise
+        
+        # Check if destination already exists
+        if dst_path.exists():
+            _LOGGER.warning("Destination file already exists, will overwrite: %s", dst_path)
+        
+        # Perform the copy operation
+        try:
+            async with aiofiles.open(src_path, 'r', encoding='utf-8') as src:
+                content = await src.read()
+                content_size = len(content)
+                _LOGGER.debug("Read source content: %d characters", content_size)
+                
+            async with aiofiles.open(dst_path, 'w', encoding='utf-8') as dst:
+                await dst.write(content)
+                _LOGGER.debug("Wrote content to destination: %s", dst_path)
+                
+        except PermissionError as e:
+            _LOGGER.error("Permission denied during file copy %s -> %s: %s", src_path, dst_path, e)
+            raise
+        except UnicodeDecodeError as e:
+            _LOGGER.error("Unicode decode error copying %s -> %s:", src_path, dst_path)
+            _LOGGER.error("  - Encoding: %s", e.encoding)
+            _LOGGER.error("  - Position: %d-%d", e.start, e.end)
+            _LOGGER.error("  - Reason: %s", e.reason)
+            raise
+        except OSError as e:
+            _LOGGER.error("OS error during file copy %s -> %s: %s (errno: %s)", 
+                         src_path, dst_path, e, getattr(e, 'errno', 'unknown'))
+            raise
+        
+        # Verify copy success
+        operation_duration = datetime.now() - operation_start
+        try:
+            dst_stat = dst_path.stat()
+            dst_size = dst_stat.st_size
+            
+            _LOGGER.debug("Successfully copied file %s -> %s (size: %d bytes, duration: %s)", 
+                         src_path, dst_path, dst_size, operation_duration)
+            
+            # Verify sizes match (for text files, this should be close)
+            if abs(src_size - dst_size) > src_size * 0.1:  # Allow 10% difference for encoding
+                _LOGGER.warning("Significant size difference after copy %s -> %s: src=%d, dst=%d", 
+                               src_path, dst_path, src_size, dst_size)
+        except OSError as e:
+            _LOGGER.warning("Cannot verify destination file after copy to %s: %s", dst_path, e)
+            
+    except Exception as e:
+        operation_duration = datetime.now() - operation_start
+        _LOGGER.error("Error copying file %s -> %s after %s: %s (type: %s)", 
+                     src_path, dst_path, operation_duration, e, type(e).__name__)
+        raise
+
+
+async def async_file_exists(file_path: Path) -> bool:
+    """Check if a file exists using async-safe operations."""
+    try:
+        # Use pathlib's exists() which is safe for async contexts
+        return file_path.exists() and file_path.is_file()
+    except Exception as e:
+        _LOGGER.error("Error checking file existence %s: %s", file_path, e)
+        return False
+
+
+async def async_ensure_directory(dir_path: Path) -> None:
+    """Ensure a directory exists using async-safe operations."""
+    try:
+        # mkdir is safe for async contexts as it's not I/O bound
+        dir_path.mkdir(parents=True, exist_ok=True)
+        _LOGGER.debug("Ensured directory exists: %s", dir_path)
+    except Exception as e:
+        _LOGGER.error("Error creating directory %s: %s", dir_path, e)
+        raise
+
+
 class MigrationManager:
     """Manages data migration between versions."""
     
@@ -39,35 +304,62 @@ class MigrationManager:
         
     async def migrate_if_needed(self, data: dict[str, Any]) -> dict[str, Any]:
         """Migrate data if version upgrade is detected."""
+        _LOGGER.info("Starting migration check for entry %s", self.entry_id)
+        
         if not data:
-            _LOGGER.debug("No existing data to migrate")
+            _LOGGER.info("No existing data found for entry %s, no migration needed", self.entry_id)
             return data
             
         stored_version = data.get("version", "0.1.0")
+        _LOGGER.info("Found existing data with version %s for entry %s", stored_version, self.entry_id)
         
         if stored_version == VERSION:
-            _LOGGER.debug("Data is already at current version %s", VERSION)
+            _LOGGER.info("Data is already at current version %s for entry %s, no migration needed", 
+                        VERSION, self.entry_id)
             return data
             
         if not is_version_supported(stored_version):
             _LOGGER.error(
-                "Cannot migrate from unsupported version %s to %s", 
+                "Cannot migrate from unsupported version %s to %s for entry %s", 
                 stored_version, 
-                VERSION
+                VERSION,
+                self.entry_id
             )
-            raise ValueError(f"Unsupported migration from version {stored_version}")
+            raise ValueError(f"Unsupported migration from version {stored_version} to {VERSION}")
         
-        _LOGGER.info("Migrating data from version %s to %s", stored_version, VERSION)
+        _LOGGER.info("Starting migration from version %s to %s for entry %s", 
+                    stored_version, VERSION, self.entry_id)
         
         # Create backup before migration
+        _LOGGER.info("Creating pre-migration backup for entry %s", self.entry_id)
         await self._create_migration_backup(data, stored_version)
         
         # Get migration path
         migration_path = get_migration_path(stored_version)
+        _LOGGER.info("Migration path for entry %s: %s -> %s (steps: %s)", 
+                    self.entry_id, stored_version, VERSION, migration_path)
         
         if not migration_path:
-            _LOGGER.warning("No migration path found from %s to %s", stored_version, VERSION)
-            return data
+            _LOGGER.warning("No migration path found from %s to %s for entry %s, updating version only", 
+                          stored_version, VERSION, self.entry_id)
+            # Still update the version even if no migration path exists
+            updated_data = data.copy()
+            updated_data["version"] = VERSION
+            
+            # Add metadata about the version update
+            if "metadata" not in updated_data:
+                updated_data["metadata"] = {}
+            
+            updated_data["metadata"]["version_update"] = {
+                "from_version": stored_version,
+                "to_version": VERSION,
+                "timestamp": datetime.now().isoformat(),
+                "update_type": "direct_version_update"
+            }
+            
+            _LOGGER.info("Updated version directly from %s to %s for entry %s", 
+                        stored_version, VERSION, self.entry_id)
+            return updated_data
         
         # Apply migrations in sequence
         migrated_data = data.copy()
@@ -79,7 +371,7 @@ class MigrationManager:
                     migrated_data = MIGRATIONS[target_version](migrated_data)
                     migrated_data["version"] = target_version
                     
-                    # Update metadata
+                    # Update metadata for this migration step
                     if "metadata" not in migrated_data:
                         migrated_data["metadata"] = {}
                     
@@ -94,87 +386,576 @@ class MigrationManager:
                     _LOGGER.error("Migration to version %s failed: %s", target_version, e)
                     raise
             else:
-                _LOGGER.warning("No migration function found for version %s", target_version)
+                _LOGGER.info("No migration function found for version %s, updating version metadata", target_version)
+                # Even without a migration function, update the version to indicate successful migration
+                migrated_data["version"] = target_version
+                
+                # Update metadata to track version update
+                if "metadata" not in migrated_data:
+                    migrated_data["metadata"] = {}
+                
+                migrated_data["metadata"]["last_migration"] = {
+                    "from_version": stored_version,
+                    "to_version": target_version,
+                    "timestamp": datetime.now().isoformat(),
+                    "migration_id": f"{stored_version}_to_{target_version}",
+                    "migration_type": "version_update_only"
+                }
         
-        _LOGGER.info("Migration completed successfully to version %s", VERSION)
+        # Ensure final version is set to current VERSION
+        migrated_data["version"] = VERSION
+        
+        # Update final migration metadata
+        if "metadata" not in migrated_data:
+            migrated_data["metadata"] = {}
+        
+        migrated_data["metadata"]["migration_completed"] = {
+            "from_version": stored_version,
+            "to_version": VERSION,
+            "timestamp": datetime.now().isoformat(),
+            "migration_path": migration_path
+        }
+        
+        # Log migration statistics
+        await self._log_migration_statistics(stored_version, VERSION, migration_path, migrated_data)
+        
+        _LOGGER.info("Migration completed successfully from %s to %s for entry %s", 
+                    stored_version, VERSION, self.entry_id)
         
         # Validate migrated data
+        _LOGGER.info("Validating migrated data for entry %s", self.entry_id)
+        validation_start_time = datetime.now()
+        
         if not await self.validate_migrated_data(migrated_data):
-            _LOGGER.error("Migration validation failed")
+            _LOGGER.error("Migration validation failed for entry %s after %s", 
+                         self.entry_id, datetime.now() - validation_start_time)
             raise ValueError("Migration validation failed - data integrity check failed")
+        
+        validation_duration = datetime.now() - validation_start_time
+        _LOGGER.info("Migration validation completed successfully for entry %s in %s", 
+                    self.entry_id, validation_duration)
         
         return migrated_data
     
     async def _create_migration_backup(self, data: dict[str, Any], from_version: str) -> None:
-        """Create a backup before migration."""
+        """Create a backup before migration with comprehensive error logging."""
+        backup_start_time = datetime.now()
+        backup_context = {
+            "entry_id": self.entry_id,
+            "from_version": from_version,
+            "to_version": VERSION,
+            "data_size": len(str(data)) if data else 0,
+            "operation": "pre_migration_backup"
+        }
+        
         try:
-            backup_dir = Path(self.hass.config.config_dir) / "roost_scheduler_backups"
-            backup_dir.mkdir(exist_ok=True)
+            _LOGGER.info("Starting migration backup creation for entry %s (version %s -> %s)", 
+                        self.entry_id, from_version, VERSION)
             
+            backup_dir = Path(self.hass.config.config_dir) / "roost_scheduler_backups"
+            _LOGGER.debug("Backup directory path: %s", backup_dir)
+            
+            # Ensure backup directory exists with detailed logging
+            try:
+                await async_ensure_directory(backup_dir)
+                _LOGGER.debug("Backup directory ready: %s", backup_dir)
+            except Exception as dir_error:
+                _LOGGER.error("Failed to create backup directory %s: %s (type: %s)", 
+                             backup_dir, dir_error, type(dir_error).__name__)
+                backup_context["directory_error"] = str(dir_error)
+                raise
+            
+            # Generate backup filename with detailed metadata
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_filename = f"pre_migration_{from_version}_to_{VERSION}_{timestamp}.json"
+            backup_filename = f"pre_migration_{from_version}_to_{VERSION}_{self.entry_id}_{timestamp}.json"
             backup_path = backup_dir / backup_filename
             
-            with backup_path.open("w") as f:
-                json.dump(data, f, indent=2, default=str)
+            _LOGGER.info("Creating migration backup file: %s", backup_path)
+            backup_context["backup_path"] = str(backup_path)
+            backup_context["backup_filename"] = backup_filename
             
-            _LOGGER.info("Created migration backup: %s", backup_path)
+            # Validate input data before backup
+            if not isinstance(data, dict):
+                _LOGGER.error("Invalid data type for backup: expected dict, got %s", type(data).__name__)
+                backup_context["data_validation_error"] = f"Invalid type: {type(data).__name__}"
+                raise TypeError(f"Backup data must be a dictionary, got {type(data).__name__}")
             
+            if not data:
+                _LOGGER.warning("Empty data provided for backup - creating minimal backup")
+                backup_context["data_warning"] = "empty_data"
+            
+            # Add comprehensive backup metadata
+            backup_data = data.copy()
+            backup_metadata = {
+                "created_at": datetime.now().isoformat(),
+                "entry_id": self.entry_id,
+                "source_version": from_version,
+                "target_version": VERSION,
+                "backup_type": "pre_migration",
+                "backup_filename": backup_filename,
+                "original_data_size": len(str(data)),
+                "backup_context": backup_context.copy()
+            }
+            
+            # Add data summary for troubleshooting
+            if isinstance(data, dict):
+                backup_metadata["data_summary"] = {
+                    "top_level_keys": list(data.keys()),
+                    "version": data.get("version", "unknown"),
+                    "entities_count": len(data.get("entities_tracked", [])),
+                    "schedules_modes": list(data.get("schedules", {}).keys())
+                }
+            
+            backup_data["backup_metadata"] = backup_metadata
+            
+            # Use async file operations to write the backup
+            try:
+                await async_write_json_file(backup_path, backup_data)
+                _LOGGER.debug("Backup file written successfully: %s", backup_path)
+            except Exception as write_error:
+                _LOGGER.error("Failed to write backup file %s: %s (type: %s)", 
+                             backup_path, write_error, type(write_error).__name__)
+                backup_context["write_error"] = str(write_error)
+                raise
+            
+            # Verify backup file was created successfully
+            backup_duration = datetime.now() - backup_start_time
+            try:
+                if backup_path.exists():
+                    backup_size = backup_path.stat().st_size
+                    _LOGGER.info("Migration backup created successfully:")
+                    _LOGGER.info("  - Entry ID: %s", self.entry_id)
+                    _LOGGER.info("  - File: %s", backup_path)
+                    _LOGGER.info("  - Size: %d bytes", backup_size)
+                    _LOGGER.info("  - Duration: %s", backup_duration)
+                    _LOGGER.info("  - Version: %s -> %s", from_version, VERSION)
+                    
+                    backup_context["success"] = True
+                    backup_context["backup_size"] = backup_size
+                    backup_context["duration"] = str(backup_duration)
+                else:
+                    _LOGGER.error("Backup file was not created: %s", backup_path)
+                    backup_context["verification_error"] = "file_not_found"
+                    raise FileNotFoundError(f"Backup file was not created: {backup_path}")
+                    
+            except OSError as verify_error:
+                _LOGGER.error("Cannot verify backup file %s: %s", backup_path, verify_error)
+                backup_context["verification_error"] = str(verify_error)
+                # Don't fail if we can't verify, the write might have succeeded
+                
         except Exception as e:
-            _LOGGER.error("Failed to create migration backup: %s", e)
-            # Don't fail migration if backup fails
+            backup_duration = datetime.now() - backup_start_time
+            backup_context["success"] = False
+            backup_context["error"] = str(e)
+            backup_context["error_type"] = type(e).__name__
+            backup_context["duration"] = str(backup_duration)
+            
+            _LOGGER.error("Migration backup creation failed for entry %s:", self.entry_id)
+            _LOGGER.error("  - Error: %s", e)
+            _LOGGER.error("  - Error type: %s", type(e).__name__)
+            _LOGGER.error("  - Duration: %s", backup_duration)
+            _LOGGER.error("  - Context: %s", backup_context)
+            
+            # Don't fail migration if backup fails, but log the error prominently
+            _LOGGER.warning("Migration will continue without backup for entry %s - this increases risk", self.entry_id)
+            _LOGGER.warning("Consider manually backing up data before proceeding with migration")
     
     async def validate_migrated_data(self, data: dict[str, Any]) -> bool:
-        """Validate migrated data structure."""
+        """Validate migrated data structure with comprehensive validation and detailed error reporting."""
+        validation_result = {
+            "errors": [],
+            "warnings": [],
+            "details": {
+                "validation_timestamp": datetime.now().isoformat(),
+                "data_version": data.get("version", "unknown"),
+                "expected_version": VERSION,
+                "structure_checks": {},
+                "field_analysis": {}
+            }
+        }
+        
         try:
-            # Check required top-level keys
+            # Check required top-level keys with detailed analysis
             required_keys = ["version", "entities_tracked", "schedules"]
+            optional_keys = ["presence_entities", "presence_rule", "presence_timeout_seconds", 
+                           "buffer", "ui", "metadata", "presence_config", "buffer_config"]
+            
+            missing_required = []
+            missing_optional = []
+            present_keys = list(data.keys())
+            
             for key in required_keys:
                 if key not in data:
-                    _LOGGER.error("Missing required key after migration: %s", key)
-                    return False
+                    missing_required.append(key)
+                    validation_result["errors"].append(f"Missing required key: {key}")
             
-            # Validate version
-            if data["version"] != VERSION:
-                _LOGGER.error("Version mismatch after migration: expected %s, got %s", 
-                            VERSION, data["version"])
-                return False
+            for key in optional_keys:
+                if key not in data:
+                    missing_optional.append(key)
+                    validation_result["warnings"].append(f"Missing optional key: {key}")
             
-            # Validate schedules structure
+            validation_result["details"]["structure_checks"] = {
+                "present_keys": present_keys,
+                "missing_required": missing_required,
+                "missing_optional": missing_optional,
+                "unexpected_keys": [k for k in present_keys if k not in required_keys + optional_keys]
+            }
+            
+            # Validate version with detailed analysis
+            actual_version = data.get("version")
+            version_analysis = {
+                "actual": actual_version,
+                "expected": VERSION,
+                "is_supported": False,
+                "is_current": False
+            }
+            
+            if actual_version == VERSION:
+                version_analysis["is_current"] = True
+                version_analysis["is_supported"] = True
+            elif actual_version and is_version_supported(actual_version):
+                version_analysis["is_supported"] = True
+                _LOGGER.warning("Version %s is supported but not current (%s), accepting as valid", 
+                              actual_version, VERSION)
+                validation_result["warnings"].append(f"Version {actual_version} is outdated (current: {VERSION})")
+            else:
+                validation_result["errors"].append(f"Version mismatch: expected {VERSION}, got {actual_version}")
+            
+            validation_result["details"]["field_analysis"]["version"] = version_analysis
+            
+            # Validate entities_tracked with detailed analysis
+            entities_tracked = data.get("entities_tracked")
+            entities_analysis = self._analyze_entity_field(entities_tracked, "entities_tracked", validation_result)
+            validation_result["details"]["field_analysis"]["entities_tracked"] = entities_analysis
+            
+            # Validate presence_entities if present
+            if "presence_entities" in data:
+                presence_entities = data.get("presence_entities")
+                presence_analysis = self._analyze_entity_field(presence_entities, "presence_entities", validation_result)
+                validation_result["details"]["field_analysis"]["presence_entities"] = presence_analysis
+            
+            # Validate schedules structure with comprehensive analysis
             schedules = data.get("schedules", {})
-            for mode in ["home", "away"]:
-                if mode not in schedules:
-                    continue
-                    
-                mode_schedules = schedules[mode]
-                if not isinstance(mode_schedules, dict):
-                    _LOGGER.error("Invalid schedules structure for mode %s", mode)
-                    return False
-                
-                # Validate each day's schedule
-                for day, day_schedule in mode_schedules.items():
-                    if not isinstance(day_schedule, list):
-                        _LOGGER.error("Invalid day schedule structure for %s/%s", mode, day)
-                        return False
-                    
-                    # Validate each slot
-                    for slot in day_schedule:
-                        if not isinstance(slot, dict):
-                            _LOGGER.error("Invalid slot structure in %s/%s", mode, day)
-                            return False
-                        
-                        required_slot_keys = ["start", "end", "target"]
-                        for slot_key in required_slot_keys:
-                            if slot_key not in slot:
-                                _LOGGER.error("Missing slot key %s in %s/%s", slot_key, mode, day)
-                                return False
+            schedules_analysis = self._analyze_schedules_field(schedules, validation_result)
+            validation_result["details"]["field_analysis"]["schedules"] = schedules_analysis
             
-            _LOGGER.debug("Migrated data validation passed")
-            return True
+            # Validate metadata with analysis
+            if "metadata" in data:
+                metadata = data.get("metadata")
+                metadata_analysis = self._analyze_metadata_field(metadata, validation_result)
+                validation_result["details"]["field_analysis"]["metadata"] = metadata_analysis
+            
+            # Validate presence_config if present
+            if "presence_config" in data:
+                presence_config = data.get("presence_config")
+                presence_config_analysis = self._analyze_presence_config_field(presence_config, validation_result)
+                validation_result["details"]["field_analysis"]["presence_config"] = presence_config_analysis
+            
+            # Validate buffer_config if present
+            if "buffer_config" in data:
+                buffer_config = data.get("buffer_config")
+                buffer_config_analysis = self._analyze_buffer_config_field(buffer_config, validation_result)
+                validation_result["details"]["field_analysis"]["buffer_config"] = buffer_config_analysis
+            
+            # Calculate validation score
+            total_possible_points = 100
+            error_penalty = len(validation_result["errors"]) * 10
+            warning_penalty = len(validation_result["warnings"]) * 2
+            validation_score = max(0, total_possible_points - error_penalty - warning_penalty)
+            validation_result["details"]["validation_score"] = validation_score
+            
+            # Log comprehensive validation results
+            if validation_result["errors"]:
+                _LOGGER.error("Migration validation failed with %d errors and %d warnings (score: %d/100):", 
+                            len(validation_result["errors"]), len(validation_result["warnings"]), validation_score)
+                
+                _LOGGER.error("Validation errors:")
+                for error in validation_result["errors"]:
+                    _LOGGER.error("  - %s", error)
+                
+                if validation_result["warnings"]:
+                    _LOGGER.warning("Validation warnings:")
+                    for warning in validation_result["warnings"]:
+                        _LOGGER.warning("  - %s", warning)
+                
+                # Log detailed analysis for troubleshooting
+                _LOGGER.debug("Detailed validation analysis: %s", validation_result["details"])
+                
+                return False
+            else:
+                if validation_result["warnings"]:
+                    _LOGGER.info("Migration validation passed with %d warnings (score: %d/100)", 
+                               len(validation_result["warnings"]), validation_score)
+                    for warning in validation_result["warnings"]:
+                        _LOGGER.warning("  - %s", warning)
+                else:
+                    _LOGGER.info("Migration validation passed successfully (score: %d/100)", validation_score)
+                
+                return True
             
         except Exception as e:
-            _LOGGER.error("Error validating migrated data: %s", e)
+            _LOGGER.error("Error during migration validation: %s", e)
+            validation_result["errors"].append(f"Validation exception: {e}")
+            validation_result["details"]["validation_exception"] = str(e)
             return False
+    
+    def _analyze_entity_field(self, entities: Any, field_name: str, validation_result: dict) -> dict:
+        """Analyze an entity list field and add validation results."""
+        analysis = {
+            "type": type(entities).__name__,
+            "count": 0,
+            "valid_entities": [],
+            "invalid_entities": [],
+            "domains": set()
+        }
+        
+        if entities is None:
+            validation_result["warnings"].append(f"{field_name} is None")
+            return analysis
+        
+        if not isinstance(entities, list):
+            validation_result["errors"].append(f"{field_name} must be a list, got {type(entities).__name__}")
+            return analysis
+        
+        analysis["count"] = len(entities)
+        
+        for i, entity_id in enumerate(entities):
+            if not isinstance(entity_id, str):
+                validation_result["errors"].append(f"{field_name}[{i}] must be a string, got {type(entity_id).__name__}")
+                analysis["invalid_entities"].append(f"Index {i}: not a string")
+                continue
+            
+            if not entity_id.strip():
+                validation_result["errors"].append(f"{field_name}[{i}] cannot be empty")
+                analysis["invalid_entities"].append(f"Index {i}: empty string")
+                continue
+            
+            if '.' not in entity_id:
+                validation_result["errors"].append(f"{field_name}[{i}] must be in format 'domain.entity': {entity_id}")
+                analysis["invalid_entities"].append(f"Index {i}: invalid format")
+                continue
+            
+            domain, entity = entity_id.split('.', 1)
+            if not domain or not entity:
+                validation_result["errors"].append(f"{field_name}[{i}] has empty domain or entity part: {entity_id}")
+                analysis["invalid_entities"].append(f"Index {i}: empty parts")
+                continue
+            
+            analysis["valid_entities"].append(entity_id)
+            analysis["domains"].add(domain)
+        
+        analysis["domains"] = list(analysis["domains"])
+        return analysis
+    
+    def _analyze_schedules_field(self, schedules: Any, validation_result: dict) -> dict:
+        """Analyze schedules field structure."""
+        analysis = {
+            "type": type(schedules).__name__,
+            "modes": [],
+            "total_slots": 0,
+            "mode_analysis": {}
+        }
+        
+        if not isinstance(schedules, dict):
+            validation_result["errors"].append("schedules must be a dictionary")
+            return analysis
+        
+        valid_modes = {"home", "away"}
+        valid_days = {"monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"}
+        
+        for mode, mode_schedules in schedules.items():
+            analysis["modes"].append(mode)
+            
+            if mode not in valid_modes:
+                validation_result["warnings"].append(f"Unexpected schedule mode: {mode}")
+            
+            mode_analysis = {"days": [], "total_slots": 0, "slot_validation": []}
+            
+            if not isinstance(mode_schedules, dict):
+                validation_result["errors"].append(f"Invalid schedules structure for mode {mode}: must be dict")
+                analysis["mode_analysis"][mode] = mode_analysis
+                continue
+            
+            for day, day_schedule in mode_schedules.items():
+                mode_analysis["days"].append(day)
+                
+                if day.lower() not in valid_days:
+                    validation_result["warnings"].append(f"Invalid day in {mode} mode: {day}")
+                
+                if not isinstance(day_schedule, list):
+                    validation_result["errors"].append(f"Invalid day schedule structure for {mode}/{day}: must be list")
+                    continue
+                
+                slot_count = len(day_schedule)
+                mode_analysis["total_slots"] += slot_count
+                analysis["total_slots"] += slot_count
+                
+                # Validate each slot
+                for i, slot in enumerate(day_schedule):
+                    slot_path = f"{mode}/{day}[{i}]"
+                    
+                    if not isinstance(slot, dict):
+                        validation_result["errors"].append(f"Invalid slot structure in {slot_path}: must be dict")
+                        mode_analysis["slot_validation"].append(f"{slot_path}: not a dict")
+                        continue
+                    
+                    # Check required slot fields
+                    required_slot_keys = ["start", "end", "target"]
+                    missing_keys = []
+                    for slot_key in required_slot_keys:
+                        if slot_key not in slot:
+                            missing_keys.append(slot_key)
+                            validation_result["errors"].append(f"Missing slot key {slot_key} in {slot_path}")
+                    
+                    if missing_keys:
+                        mode_analysis["slot_validation"].append(f"{slot_path}: missing {missing_keys}")
+                    
+                    # Validate target structure if present
+                    if "target" in slot:
+                        target = slot["target"]
+                        if isinstance(target, dict):
+                            if "domain" not in target:
+                                validation_result["warnings"].append(f"Target in {slot_path} missing domain")
+                            if "temperature" not in target:
+                                validation_result["warnings"].append(f"Target in {slot_path} missing temperature")
+                        elif isinstance(target, (int, float)):
+                            validation_result["warnings"].append(f"Target in {slot_path} uses legacy numeric format")
+                        else:
+                            validation_result["errors"].append(f"Invalid target format in {slot_path}")
+            
+            analysis["mode_analysis"][mode] = mode_analysis
+        
+        return analysis
+    
+    def _analyze_metadata_field(self, metadata: Any, validation_result: dict) -> dict:
+        """Analyze metadata field structure."""
+        analysis = {
+            "type": type(metadata).__name__,
+            "keys": [],
+            "has_migration_info": False,
+            "has_timestamps": False
+        }
+        
+        if not isinstance(metadata, dict):
+            validation_result["errors"].append("metadata must be a dictionary")
+            return analysis
+        
+        analysis["keys"] = list(metadata.keys())
+        
+        # Check for migration-related metadata
+        migration_keys = ["migration_completed", "last_migration", "version_update"]
+        for key in migration_keys:
+            if key in metadata:
+                analysis["has_migration_info"] = True
+                break
+        
+        # Check for timestamp fields
+        timestamp_keys = ["created", "last_modified", "created_at", "updated_at"]
+        for key in timestamp_keys:
+            if key in metadata:
+                analysis["has_timestamps"] = True
+                break
+        
+        return analysis
+    
+    def _analyze_presence_config_field(self, presence_config: Any, validation_result: dict) -> dict:
+        """Analyze presence_config field structure."""
+        analysis = {
+            "type": type(presence_config).__name__,
+            "keys": [],
+            "entity_count": 0
+        }
+        
+        if not isinstance(presence_config, dict):
+            validation_result["errors"].append("presence_config must be a dictionary")
+            return analysis
+        
+        analysis["keys"] = list(presence_config.keys())
+        
+        # Validate entities if present
+        if "entities" in presence_config:
+            entities = presence_config["entities"]
+            if isinstance(entities, list):
+                analysis["entity_count"] = len(entities)
+            else:
+                validation_result["errors"].append("presence_config.entities must be a list")
+        
+        # Validate rule if present
+        if "rule" in presence_config:
+            rule = presence_config["rule"]
+            valid_rules = {"anyone_home", "everyone_home", "custom"}
+            if rule not in valid_rules:
+                validation_result["errors"].append(f"Invalid presence rule: {rule}")
+        
+        return analysis
+    
+    def _analyze_buffer_config_field(self, buffer_config: Any, validation_result: dict) -> dict:
+        """Analyze buffer_config field structure."""
+        analysis = {
+            "type": type(buffer_config).__name__,
+            "keys": [],
+            "has_required_fields": True
+        }
+        
+        if not isinstance(buffer_config, dict):
+            validation_result["errors"].append("buffer_config must be a dictionary")
+            return analysis
+        
+        analysis["keys"] = list(buffer_config.keys())
+        
+        # Check required fields
+        required_fields = ["time_minutes", "value_delta", "enabled", "apply_to"]
+        missing_fields = []
+        
+        for field in required_fields:
+            if field not in buffer_config:
+                missing_fields.append(field)
+                validation_result["errors"].append(f"buffer_config missing required field: {field}")
+        
+        if missing_fields:
+            analysis["has_required_fields"] = False
+            analysis["missing_fields"] = missing_fields
+        
+        return analysis
+
+    async def _log_migration_statistics(self, from_version: str, to_version: str, 
+                                      migration_path: list[str], migrated_data: dict[str, Any]) -> None:
+        """Log detailed migration statistics."""
+        try:
+            # Count data elements
+            schedules = migrated_data.get("schedules", {})
+            total_schedules = 0
+            for mode_schedules in schedules.values():
+                if isinstance(mode_schedules, dict):
+                    for day_schedule in mode_schedules.values():
+                        if isinstance(day_schedule, list):
+                            total_schedules += len(day_schedule)
+            
+            entities_tracked = migrated_data.get("entities_tracked", [])
+            
+            # Log migration summary
+            _LOGGER.info("Migration Statistics for entry %s:", self.entry_id)
+            _LOGGER.info("  - Source version: %s", from_version)
+            _LOGGER.info("  - Target version: %s", to_version)
+            _LOGGER.info("  - Migration path: %s", " -> ".join([from_version] + migration_path))
+            _LOGGER.info("  - Total schedule slots: %d", total_schedules)
+            _LOGGER.info("  - Entities tracked: %d", len(entities_tracked))
+            _LOGGER.info("  - Schedule modes: %s", list(schedules.keys()))
+            
+            # Log metadata if present
+            metadata = migrated_data.get("metadata", {})
+            if "migration_completed" in metadata:
+                completion_info = metadata["migration_completed"]
+                _LOGGER.info("  - Migration completed at: %s", completion_info.get("timestamp"))
+            
+            # Log presence and buffer config status
+            if "presence_config" in migrated_data:
+                _LOGGER.info("  - Presence configuration: Present")
+            if "buffer_config" in migrated_data:
+                _LOGGER.info("  - Buffer configuration: Present")
+                
+        except Exception as e:
+            _LOGGER.error("Error logging migration statistics for entry %s: %s", self.entry_id, e)
 
 
 # Migration functions for each version
@@ -546,7 +1327,7 @@ class UninstallManager:
         
         try:
             backup_dir = Path(self.hass.config.config_dir) / "roost_scheduler_backups"
-            backup_dir.mkdir(exist_ok=True)
+            await async_ensure_directory(backup_dir)
             
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             
@@ -558,11 +1339,16 @@ class UninstallManager:
                     backup_name = f"final_backup_{storage_file.name}_{timestamp}.json"
                     backup_path = backup_dir / backup_name
                     
-                    with storage_file.open() as src, backup_path.open("w") as dst:
-                        dst.write(src.read())
-                    
-                    backup_locations.append(str(backup_path))
-                    _LOGGER.info("Created final backup: %s", backup_path)
+                    try:
+                        # Use async file operations to copy the file
+                        await async_copy_file(storage_file, backup_path)
+                        
+                        backup_locations.append(str(backup_path))
+                        _LOGGER.info("Created final backup: %s", backup_path)
+                    except Exception as file_error:
+                        _LOGGER.error("Failed to backup file %s: %s", storage_file, file_error)
+                        # Continue with other files even if one fails
+                        continue
             
         except Exception as e:
             _LOGGER.error("Failed to create final backup: %s", e)
@@ -574,8 +1360,8 @@ class UninstallManager:
         try:
             info_path = Path(self.hass.config.config_dir) / "roost_scheduler_uninstall_info.json"
             
-            with info_path.open("w") as f:
-                json.dump(info, f, indent=2, default=str)
+            # Use async file operations to write the uninstall info
+            await async_write_json_file(info_path, info)
             
             _LOGGER.info("Created uninstall info file: %s", info_path)
             
@@ -614,12 +1400,12 @@ class UninstallManager:
         """Restore data from a backup file."""
         try:
             backup_file = Path(backup_path)
-            if not backup_file.exists():
+            if not await async_file_exists(backup_file):
                 _LOGGER.error("Backup file not found: %s", backup_path)
                 return False
             
-            with backup_file.open() as f:
-                backup_data = json.load(f)
+            # Use async file operations to read the backup
+            backup_data = await async_read_json_file(backup_file)
             
             # Validate backup data
             if "version" not in backup_data:

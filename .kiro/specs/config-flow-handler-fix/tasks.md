@@ -228,7 +228,7 @@
   - Git add and commit changes
   - _Requirements: 9.5_
 
-- [ ]* 8.4 Write unit tests for file system validation
+- [x] 8.4 Write unit tests for file system validation
   - Create tests for permission checking
   - Write tests for file validation
   - Add tests for error handling
@@ -262,7 +262,7 @@
   - Git add and commit changes
   - _Requirements: 7.3, 7.4_
 
-- [ ]* 9.4 Write unit tests for troubleshooting system
+- [x] 9.4 Write unit tests for troubleshooting system
   - Create tests for report generation
   - Write tests for diagnostic collection
   - Add tests for error guidance
@@ -296,7 +296,7 @@
   - Git add and commit changes
   - _Requirements: 1.1, 8.1_
 
-- [ ]* 10.4 Write comprehensive integration tests
+- [x] 10.4 Write comprehensive integration tests
   - Create full integration test suite
   - Write end-to-end error recovery tests
   - Add complete validation system tests
